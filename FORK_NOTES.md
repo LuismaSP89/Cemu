@@ -18,7 +18,8 @@ Este fork contiene tres cambios funcionales respecto a `cemu-project/Cemu`:
    [noeldvictor/Cemu-thor-experiment@3a61e0d](https://github.com/noeldvictor/Cemu-thor-experiment/commit/3a61e0d5dc23ad860efe5d337a447e76c86b0332);
    NO se adoptó la otra parte de ese commit (sustituir `_SyncForPendingQueryResult()` por `GX2DrawDone()`)
    porque `GX2DrawDone` solo emite `IT_HLE_SYNC_ASYNC_OPERATIONS` en Vulkan o con la opción "full sync",
-   y en OpenGL/Metal dejaría de garantizar el resultado. Sin PR upstream (solo en `main` del fork).
+   y en OpenGL/Metal dejaría de garantizar el resultado. Incluido en el PR #2047 como segundo commit
+   (rama `fix/cpu-occlusion-query-sync`).
 
 ## Qué cambia y por qué
 
@@ -53,7 +54,7 @@ queries y espera el resultado del frame actual).
 - `main`: upstream `main` + el fix + este fichero + `workflow_dispatch` en
   `.github/workflows/build_check.yml` (solo para poder lanzar builds a mano en
   el fork).
-- `fix/cpu-occlusion-query-sync`: solo el commit del fix de luces (rama del PR #2047).
+- `fix/cpu-occlusion-query-sync`: los dos commits del fix de luces (sync + drenaje idle), rama del PR #2047.
 - `fix/fsc-merged-dir-order`: solo el commit del fix de la actualización v32 (rama del PR #2048).
 
 ## Cómo actualizar el fork con el Cemu más reciente (rebase)
