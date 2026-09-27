@@ -1,6 +1,6 @@
 # Notas de este fork (LuismaSP89/Cemu)
 
-Este fork contiene dos cambios funcionales respecto a `cemu-project/Cemu`:
+Este fork contiene tres cambios funcionales respecto a `cemu-project/Cemu`:
 
 1. **Fix: luces/lens flares que atraviesan paredes en ZombiU** (issue upstream
    [cemu-project/Cemu#635](https://github.com/cemu-project/Cemu/issues/635), PR #2047).
@@ -8,6 +8,17 @@ Este fork contiene dos cambios funcionales respecto a `cemu-project/Cemu`:
    el listado de un directorio combinado base+update se ordena por nombre, como en consola; antes Cemu
    listaba primero los ficheros de la actualización y el juego indexaba mal sus archivos `.bfz`
    (PR upstream #2048, rama `fix/fsc-merged-dir-order`).
+3. **Optimización del fix 1: publicar resultados de queries en el bucle idle del hilo GPU** —
+   `src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp` (`LatteCP_readU32Deprc`). Cemu solo escribía en
+   memoria los resultados de las occlusion queries terminadas en el vsync virtual o cada 8 `GX2QueryBegin`,
+   así que aunque la GPU ya hubiese terminado el juego veía "no listo" y el fix 1 forzaba la sincronización
+   completa casi en cada sondeo. Ahora el hilo GPU también los publica cuando se queda sin comandos (1 de cada
+   8 iteraciones del bucle idle, porque la comprobación sondea fences de Vulkan), y la sincronización forzada
+   queda como fallback poco frecuente. Idea tomada de
+   [noeldvictor/Cemu-thor-experiment@3a61e0d](https://github.com/noeldvictor/Cemu-thor-experiment/commit/3a61e0d5dc23ad860efe5d337a447e76c86b0332);
+   NO se adoptó la otra parte de ese commit (sustituir `_SyncForPendingQueryResult()` por `GX2DrawDone()`)
+   porque `GX2DrawDone` solo emite `IT_HLE_SYNC_ASYNC_OPERATIONS` en Vulkan o con la opción "full sync",
+   y en OpenGL/Metal dejaría de garantizar el resultado. Sin PR upstream (solo en `main` del fork).
 
 ## Qué cambia y por qué
 
