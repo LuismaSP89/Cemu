@@ -6,8 +6,16 @@
 #include "Cafe/GameProfile/GameProfile.h"
 #include "util/EventService.h"
 
+#include "input/api/Wiimote/WiimoteAutoSlots.h"
+#include "input/api/Wiimote/WiimoteSpeakerTrace.h"
+#include "input/WpadChannelOrder.h"
+#include "config/CemuConfig.h"
+#include <cstdlib>
+
 InputManager::InputManager()
 {
+	const auto automatic = std::getenv("CEMU_AUTO_CONTROLLER_SLOTS");
+	m_auto_configure_enabled = AutoControllerSwitch::Enabled(false, automatic && std::string_view(automatic) == "1", false);
 	/*
 	auto create_provider = []
 	template <typename TProvider>
@@ -58,6 +66,8 @@ InputManager::~InputManager()
 
 void InputManager::load() noexcept
 {
+	m_auto_configure_enabled = AutoControllerSwitch::Enabled(GetConfig().automaticControllerSetup.GetValue(),m_auto_configure_enabled,false);
+	cemuLog_log(LogType::Force, "Controller automatic setup={} (host owns device assignment and profiles)", m_auto_configure_enabled.load());
 	for (size_t i = 0; i < kMaxController; ++i)
 	{
 		try
@@ -69,6 +79,21 @@ void InputManager::load() noexcept
 			cemuLog_log(LogType::Force, "can't load controller profile: {}", ex.what());
 		}
 	}
+	if (m_auto_configure_enabled)
+	{
+		std::scoped_lock lock(m_auto_configure_mutex);
+		const std::array<const char*,2> names{"Pro", "Wiimote"};
+		for (size_t player = 1; player < kMaxController; ++player)
+			for (size_t kind = 0; kind < names.size(); ++kind)
+			{
+				const auto path = ActiveSettings::GetConfigPath("controllerProfiles/auto-config/controller{}/{}.xml", player, names[kind]);
+				if (!fs::exists(path)) continue;
+				const auto restored = read_controller_profile(player, path, true);
+				const auto type = kind == 0 ? EmulatedController::Pro : EmulatedController::Wiimote;
+				if (restored && restored->type() == type) m_auto_slots[player].profiles[kind] = restored;
+			}
+	}
+	m_profiles_loaded = true;
 }
 
 bool InputManager::load(size_t player_index, std::string_view filename)
@@ -89,23 +114,54 @@ bool InputManager::load(size_t player_index, std::string_view filename)
 	if (!fs::exists(file_path))
 		return false;
 
+	const auto controller = read_controller_profile(player_index, file_path);
+	if (!controller) return false;
+	try
+	{
+		set_controller(controller);
+		return true;
+	}
+	catch (const std::exception& error)
+	{
+		cemuLog_log(LogType::Force, "can't load config file: {}", error.what());
+		return false;
+	}
+}
+
+EmulatedControllerPtr InputManager::read_controller_profile(size_t player_index, const fs::path& file_path, bool inactive)
+{
 	try
 	{
 		auto xmlData = FileStream::LoadIntoMemory(file_path);
 		if (!xmlData || xmlData->empty())
-			return false;
+			return {};
 	
 		pugi::xml_document doc;
 		if (!doc.load_buffer(xmlData->data(), xmlData->size()))
-			return false;
+			return {};
 
 		const pugi::xml_node root = doc.document_element();
 
 		const auto type_node = root.child("type");
 		if (!type_node)
-			return false;
+			return {};
 
 		const auto emulate = EmulatedController::type_from_string(type_node.child_value());
+		if (inactive)
+		{
+			// Do not open a cached alternative already owned by a different player.
+			for (const auto source : root.select_nodes("controller"))
+			{
+				const auto node = source.node();
+				const std::string_view api = node.child_value("api"), uuid = node.child_value("uuid");
+				if (api == "Keyboard" || api == "DSUController") continue;
+				for (size_t seat = 0; seat < kMaxController; ++seat)
+					if (seat != player_index)
+						if (const auto owner = get_controller(seat))
+							for (const auto& device : owner->controllers_snapshot())
+								if (device->api_name() == api && device->uuid() == uuid) return {};
+			}
+		}
 		auto emulated_controller = ControllerFactory::CreateEmulatedController(player_index, emulate);
 
 
@@ -201,13 +257,12 @@ bool InputManager::load(size_t player_index, std::string_view filename)
 			}
 		}
 
-		set_controller(emulated_controller);
-		return true;
+		return emulated_controller;
 	}
 	catch (const std::exception& ex)
 	{
 		cemuLog_log(LogType::Force, "can't load config file: {}", ex.what());
-		return false;
+		return {};
 	}
 }
 
@@ -442,6 +497,8 @@ void InputManager::save() noexcept
 
 bool InputManager::save(size_t player_index, std::string_view filename)
 {
+	std::unique_lock profileLock(m_auto_profile_mutex, std::defer_lock);
+	if (m_auto_configure_enabled) profileLock.lock();
 	// dont overwrite files if set by gameprofile
 	if (m_is_gameprofile_set[player_index])
 		return true;
@@ -449,6 +506,8 @@ bool InputManager::save(size_t player_index, std::string_view filename)
 	auto emulated_controller = get_controller(player_index);
 	if (!emulated_controller)
 		return false;
+	std::optional<std::shared_lock<std::shared_mutex>> controllerLock;
+	if (m_auto_configure_enabled) controllerLock.emplace(emulated_controller->m_mutex);
 
 	fs::path file_path = ActiveSettings::GetConfigPath("controllerProfiles");
 	fs::create_directories(file_path);
@@ -539,6 +598,7 @@ bool InputManager::save(size_t player_index, std::string_view filename)
 			}
 		}
 	}
+	if (controllerLock) controllerLock->unlock();
 	FileStream* fs = FileStream::createFile2(file_path);
 	if (!fs)
 		return false;
@@ -547,6 +607,16 @@ bool InputManager::save(size_t player_index, std::string_view filename)
 	std::string xmlStr = xmlData.str();
 	fs->writeData(xmlStr.data(), xmlStr.size());
 	delete fs;
+	if (m_auto_configure_enabled && player_index > 0 && player_index < kMaxController &&
+		(emulated_controller->type() == EmulatedController::Pro || emulated_controller->type() == EmulatedController::Wiimote))
+	{
+		const auto sidecar = ActiveSettings::GetConfigPath("controllerProfiles/auto-config/controller{}/{}.xml",
+			player_index, emulated_controller->type() == EmulatedController::Pro ? "Pro" : "Wiimote");
+		fs::create_directories(sidecar.parent_path());
+		std::unique_ptr<FileStream> alternative(FileStream::createFile2(sidecar));
+		if (!alternative) return false;
+		alternative->writeData(xmlStr.data(), xmlStr.size());
+	}
 	return true;
 }
 
@@ -708,6 +778,11 @@ std::shared_ptr<WPADController> InputManager::get_wpad_controller(size_t index) 
 		return {};
 
 	std::shared_lock lock(m_mutex);
+	if (m_wpad[index])
+	{
+		const auto player = m_wpad[index]->player_index();
+		if (m_auto_configure_enabled && player < kMaxController && m_auto_managed[player].load() && !m_auto_present[player].load()) return {};
+	}
 	return std::dynamic_pointer_cast<WPADController>(m_wpad[index]);
 }
 
@@ -719,9 +794,12 @@ std::pair<size_t, size_t> InputManager::get_controller_count() const
 	return std::make_pair(vpad, wpad);
 }
 
+
+
 void InputManager::on_device_changed()
 {
 	std::shared_lock lock(m_mutex);
+
 	for (auto& pad : m_vpad)
 	{
 		if (pad)
@@ -931,12 +1009,291 @@ std::optional<glm::ivec2> InputManager::get_right_down_mouse_info(bool* is_pad)
 	return {};
 }
 
+void InputManager::auto_configure_controllers()
+{
+	if (!m_auto_configure_enabled || !m_profiles_loaded || false) return;
+	for (size_t player = 1; player < kMaxController; ++player) auto_configure_slot(player);
+}
+
+void InputManager::auto_configure_slot(size_t player)
+{
+	if (!m_auto_configure_enabled || !m_profiles_loaded || false) return;
+	if (player == 0 || player >= kMaxController) return;
+	auto& managed = m_auto_managed[player];
+	auto& present = m_auto_present[player];
+	const auto gamepad = get_controller(0);
+	const auto current = get_controller(player);
+	if (!gamepad || gamepad->type() != EmulatedController::VPAD ||
+		(current && current->type() != EmulatedController::Pro && current->type() != EmulatedController::Wiimote))
+	{
+		managed = false;
+		return;
+	}
+
+	std::scoped_lock autoLock(m_auto_configure_mutex);
+	auto& alternatives = m_auto_slots[player].profiles;
+	auto& handoff = m_auto_slots[player].handoff;
+	std::vector<std::shared_ptr<ControllerBase>> reserved;
+	for (size_t seat = 0; seat < kMaxController; ++seat)
+		if (seat != player)
+			if (const auto pad = get_controller(seat))
+				for (const auto& source : pad->controllers_snapshot()) reserved.push_back(source);
+	for (size_t seat = 1; seat < kMaxController; ++seat)
+		if (seat != player)
+			for (const auto& pending : m_auto_slots[seat].profiles)
+				if (pending && reinterpret_cast<std::uintptr_t>(pending.get()) == m_auto_slots[seat].handoff.pending)
+					for (const auto& source : pending->controllers_snapshot()) reserved.push_back(source);
+	const auto same = [](const auto& a, const auto& b) { return a->api() == b->api() && a->uuid() == b->uuid(); };
+	const auto isReserved = [&](const auto& source) {
+		return std::any_of(reserved.begin(), reserved.end(), [&](const auto& item) { return same(source, item); });
+	};
+	const auto isPhysical = [](const auto& source, EmulatedController::Type type) {
+		if (type == EmulatedController::Wiimote) return source->api() == InputAPI::Wiimote;
+		return source->api() == InputAPI::SDLController || source->api() == InputAPI::XInput ||
+			source->api() == InputAPI::DirectInput || source->api() == InputAPI::GameCube;
+	};
+	const auto eligible = [&](const auto& pad) {
+		if (!pad) return false;
+		const auto sources = pad->controllers_snapshot();
+		bool physical = false;
+		for (const auto& source : sources)
+			if (isPhysical(source, pad->type()))
+			{
+				if (isReserved(source)) return false;
+				physical = true;
+			}
+		return physical;
+	};
+	const auto connected = [&](const auto& pad) {
+		if (!eligible(pad)) return false;
+		bool live = false;
+		for (const auto& source : pad->controllers_snapshot())
+			if (isPhysical(source, pad->type()))
+			{
+				if (!source->is_connected()) source->connect();
+				live |= source->is_connected();
+			}
+		return live;
+	};
+	if (current && eligible(current))
+		alternatives[current->type() == EmulatedController::Pro ? 0 : 1] = current;
+
+	if (current && connected(current))
+	{
+		managed = true;
+		present = true;
+		handoff.Reset();
+		return;
+	}
+
+	// Discover unassigned gamepads through SDL only. Other APIs may describe the
+	// same physical device, so mixed-API configurations use their existing profile.
+	const bool mixedApis = std::any_of(reserved.begin(), reserved.end(), [](const auto& source) {
+		return source->api() == InputAPI::XInput || source->api() == InputAPI::DirectInput;
+	});
+	const std::array<InputAPI::Type,2> apis{InputAPI::SDLController, InputAPI::Wiimote};
+	for (size_t kind = 0; kind < apis.size(); ++kind)
+	{
+		auto& alternate = alternatives[kind];
+		if (connected(alternate) || (kind == 0 && mixedApis) || !is_api_available(apis[kind])) continue;
+		for (const auto& source : get_api_provider(apis[kind])->get_controllers())
+		{
+			if (!source || isReserved(source)) continue;
+			if (alternate)
+			{
+				const auto existing = alternate->controllers_snapshot();
+				if (std::any_of(existing.begin(), existing.end(), [&](const auto& item) { return same(source,item); })) continue;
+			}
+			auto physical = source;
+			EmulatedControllerPtr remembered;
+			for (const auto& slot : m_auto_slots)
+				if (const auto& previous = slot.profiles[kind])
+					for (const auto& oldSource : previous->controllers_snapshot())
+						if (same(oldSource,source)) { remembered = previous; physical = oldSource; }
+			if (!physical->connect() || !physical->is_connected()) continue;
+			auto candidate = ControllerFactory::CreateEmulatedController(player, kind == 0 ? EmulatedController::Pro : EmulatedController::Wiimote);
+			candidate->add_controller(physical);
+			if (remembered)
+			{
+				pugi::xml_document settings;
+				auto root = settings.append_child("emulated_controller");
+				remembered->save(root);
+				candidate->load(root);
+				std::shared_lock mappingLock(remembered->m_mutex);
+				for (const auto& [id,mapping] : remembered->m_mappings)
+					if (const auto mapped = mapping.controller.lock(); mapped && same(mapped,physical))
+						candidate->set_mapping(id,physical,mapping.button);
+			}
+			else physical->set_rumble(1.0f);
+			if (!candidate->set_default_mapping(physical) && candidate->m_mappings.empty()) continue;
+			alternate = std::move(candidate);
+			break;
+		}
+	}
+
+	using AutoControllerSwitch::Kind;
+	const auto currentKind = !current ? Kind::None : current->type() == EmulatedController::Pro ? Kind::Pro : Kind::Wiimote;
+	const bool proLive = connected(alternatives[0]), remoteLive = connected(alternatives[1]);
+	const auto kind = AutoControllerSwitch::Select(currentKind, proLive, remoteLive);
+	const auto next = kind == Kind::None ? EmulatedControllerPtr{} : alternatives[kind == Kind::Pro ? 0 : 1];
+	managed = true;
+	if (!next)
+	{
+		present = false;
+		handoff.Reset();
+		return;
+	}
+	if (current == next)
+	{
+		present = true;
+		handoff.Reset();
+		return;
+	}
+
+	const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count());
+	const bool firstHandoff = handoff.pending != reinterpret_cast<std::uintptr_t>(next.get());
+	present = false;
+	if (firstHandoff && current && !save(player))
+	{
+		handoff.Reset();
+		cemuLog_log(LogType::Force, "Controller {} auto-switch held: previous profile could not be saved", player + 1);
+		return;
+	}
+	// Expose a real disconnect before changing controller type so games can
+	// clear their old callbacks/data format rather than receiving stale Pro input.
+	if (!handoff.Ready(reinterpret_cast<std::uintptr_t>(current.get()), reinterpret_cast<std::uintptr_t>(next.get()), now)) return;
+
+	{
+		std::scoped_lock lock(m_mutex);
+		const auto findPlayer = [&](size_t player) -> EmulatedControllerPtr {
+			for (const auto& pad : m_vpad) if (pad && pad->player_index() == player) return pad;
+			for (const auto& pad : m_wpad) if (pad && pad->player_index() == player) return pad;
+
+			return {};
+		};
+		if (findPlayer(0) != gamepad || findPlayer(player) != current) { handoff.Reset(); return; }
+		const auto nextSources = next->controllers_snapshot();
+		for (size_t seat = 0; seat < kMaxController; ++seat)
+			if (seat != player)
+				if (const auto pad = findPlayer(seat))
+					for (const auto& source : pad->controllers_snapshot())
+						for (const auto& nextSource : nextSources)
+							if (isPhysical(nextSource,next->type()) && same(source,nextSource)) { handoff.Reset(); return; }
+		auto slot = std::find_if(m_wpad.begin(), m_wpad.end(), [&](const auto& pad) { return pad && pad->player_index() == player; });
+		if (slot == m_wpad.end()) slot = std::find(m_wpad.begin(), m_wpad.end(), nullptr);
+		if (slot == m_wpad.end()) return;
+		*slot = std::dynamic_pointer_cast<WPADController>(next);
+		present = true;
+		handoff.Reset();
+	}
+	if (current) current->stop_rumble();
+	save(player);
+	cemuLog_log(LogType::Force, "Controller {} auto-switch: {} active; GamePad controller 1 unchanged", player + 1, next->type_string());
+	EventService::instance().signal<Events::ControllerChanged>();
+}
+
+void InputManager::auto_configure_wiimotes()
+{
+#if HAS_WIIMOTE
+	if (m_auto_configure_enabled) return;
+	if (!m_profiles_loaded || false || !is_api_available(InputAPI::Wiimote)) return;
+	const auto provider = std::static_pointer_cast<WiimoteControllerProvider>(get_api_provider(InputAPI::Wiimote));
+	// do not start the Wii Remote workers just to look for hotplugged remotes: only once a profile uses the
+	// Wiimote API (the workers already run) or the dedicated USB adapter is enabled
+	if (!provider->is_active()) return;
+	for (const auto& native : provider->get_controllers())
+	{
+		if (!native) continue;
+		auto inspect = [&](std::array<bool, kMaxController>& occupied) {
+			bool bound = false;
+			auto visit = [&](const EmulatedControllerPtr& pad) {
+				if (!pad) return;
+				if (pad->player_index() < occupied.size()) occupied[pad->player_index()] = true;
+				std::shared_lock controller_lock(pad->m_mutex);
+				for (const auto& source : pad->m_controllers)
+					if (source->api() == native->api() && source->uuid() == native->uuid()) bound = true;
+			};
+			for (const auto& pad : m_vpad) visit(pad);
+			for (const auto& pad : m_wpad) visit(pad);
+
+			return bound;
+		};
+		std::array<bool, kMaxController> occupied{};
+		{
+			std::shared_lock lock(m_mutex);
+			if (inspect(occupied)) continue;
+		}
+		if (!native->is_connected()) continue;
+		const auto slot = WiimoteAutoSlots::FirstFree(occupied);
+		if (!slot) continue;
+		auto candidate = ControllerFactory::CreateEmulatedController(*slot, EmulatedController::Wiimote);
+		native->set_rumble(1.0f);
+		candidate->add_controller(native);
+		if (!candidate->set_default_mapping(native)) continue;
+		{
+			std::scoped_lock lock(m_mutex);
+			occupied.fill(false);
+			if (inspect(occupied) || occupied[*slot]) continue;
+			const auto free = std::find(m_wpad.begin(), m_wpad.end(), nullptr);
+			if (free == m_wpad.end()) continue;
+			*free = std::dynamic_pointer_cast<WPADController>(candidate);
+		}
+		cemuLog_log(LogType::Force, "Wiimote auto-configuration: live remote assigned to controller position {} without replacing existing profiles", *slot + 1);
+		EventService::instance().signal<Events::ControllerChanged>();
+	}
+#endif
+}
+
+void InputManager::reconcile_wpad_channels()
+{
+	std::scoped_lock lock(m_mutex);
+	const auto live = [&](const auto& pad) {
+		if (!pad) return false;
+		const auto player = pad->player_index();
+		if (m_auto_configure_enabled && player < kMaxController && m_auto_managed[player] && !m_auto_present[player]) return false;
+		const auto wpad = std::dynamic_pointer_cast<WPADController>(pad);
+		return wpad && wpad->is_guest_connected();
+	};
+	if (m_auto_configure_enabled) input::ReconcileWpadChannels(m_wpad, m_live_wpad_channels, live);
+	for (size_t channel = 0; channel < m_wpad.size(); ++channel)
+		if (m_wpad[channel]) m_wpad[channel]->set_player_led_index(channel);
+}
+
 void InputManager::update_thread()
 {
 	SetThreadName("Input_update");
+	auto next_discovery = std::chrono::steady_clock::now();
+	auto next_automatic = next_discovery;
 	while (!m_update_thread_shutdown.load(std::memory_order::relaxed))
 	{
+		const auto now = std::chrono::steady_clock::now();
+		if (m_wiimote_pairing_requested.exchange(false, std::memory_order_acq_rel))
+		{
+			// Native HOME and game WPAD sync requests use the same host worker
+			// as ordinary hotplug, never the guest's callback/fiber stack.
+			try
+			{
+				if (is_api_available(InputAPI::Wiimote))
+					std::static_pointer_cast<WiimoteControllerProvider>(get_api_provider(InputAPI::Wiimote))->request_discovery();
+			}
+			catch (const std::exception& error) { cemuLog_log(LogType::Force, "Wiimote pairing request failed: {}", error.what()); }
+			next_automatic = next_discovery = now;
+		}
+		if (now >= next_automatic)
+		{
+			try { auto_configure_controllers(); reconcile_wpad_channels(); }
+			catch (const std::exception& error) { cemuLog_log(LogType::Force, "Automatic controller configuration failed: {}", error.what()); }
+			next_automatic = now + std::chrono::milliseconds(100);
+		}
+		if (now >= next_discovery)
+		{
+			try { auto_configure_wiimotes(); }
+			catch (const std::exception& error) { cemuLog_log(LogType::Force, "Wiimote auto-configuration failed: {}", error.what()); }
+			next_discovery = now + std::chrono::milliseconds(500);
+		}
 		std::shared_lock lock(m_mutex);
+
 		for (auto& pad : m_vpad)
 		{
 			if (pad)
@@ -967,8 +1324,13 @@ void InputManager::Shutdown()
     for (auto& pad : m_vpad) pad.reset();
 	for (auto& pad : m_wpad) pad.reset();
 
+
 	for (auto& providers : m_api_available)
 	{
+#if HAS_WIIMOTE
+		for (const auto& provider : providers) if (const auto wiimote=std::dynamic_pointer_cast<WiimoteControllerProvider>(provider)) wiimote->shutdown_usb_bluetooth();
+#endif
 		providers.clear();
 	}
+	WiimoteSpeakerTrace::FlushAll();
 }

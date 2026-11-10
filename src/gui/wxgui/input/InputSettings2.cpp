@@ -3,6 +3,12 @@
 #include <wx/gbsizer.h>
 
 #include "input/InputManager.h"
+#include "input/api/Wiimote/WiimoteControllerProvider.h"
+#include "input/api/Wiimote/usb/UsbBluetoothAdapter.h"
+#include "config/CemuConfig.h"
+#include <wx/checkbox.h>
+#include <wx/textdlg.h>
+#include <wx/msgdlg.h>
 #include "wxgui/helpers/wxHelpers.h"
 #include "wxgui/helpers/wxControlObject.h"
 #include "wxgui/helpers/wxCustomData.h"
@@ -31,6 +37,7 @@
 #include "wxgui/input/settings/DefaultControllerSettings.h"
 #include "wxgui/input/panels/ClassicControllerInputPanel.h"
 #include "wxgui/input/panels/WiimoteInputPanel.h"
+
 #include "wxgui/input/settings/WiimoteControllerSettings.h"
 #include "util/EventService.h"
 
@@ -78,6 +85,52 @@ InputSettings2::InputSettings2(wxWindow* parent)
 	m_low_battery = wxHelper::LoadThemedBitmapFromPNG(INPUT_LOW_BATTERY_png, sizeof(INPUT_LOW_BATTERY_png), wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT));
 
 	auto* sizer = new wxBoxSizer(wxVERTICAL);
+	auto* automatic = new wxCheckBox(this, wxID_ANY, _("Automatically configure connected controllers"));
+	automatic->SetValue(InputManager::instance().automatic_setup_enabled());
+	automatic->SetToolTip(_("Keep GamePad/controller 1 fixed and assign connected controllers to available positions. Wii Remote numbers are separate from Cemu controller slots."));
+	automatic->Bind(wxEVT_CHECKBOX, [](wxCommandEvent& event) {
+		InputManager::instance().set_automatic_setup(event.IsChecked());
+		GetConfig().automaticControllerSetup = event.IsChecked();
+		GetConfigHandle().Save();
+	});
+	sizer->Add(automatic, 0, wxALL, 5);
+	auto* usb = new wxCheckBox(this, wxID_ANY, _("USB Bluetooth passthrough for Wii Remotes"));
+	usb->SetValue(GetConfig().wiimote_usb_bluetooth.GetValue());
+	usb->SetToolTip(_("Requires a dedicated Classic Bluetooth USB adapter with WinUSB. Use SYNC to pair and A to reconnect."));
+	auto* adapter = new wxButton(this, wxID_ANY, _("Adapter USB ID...") );
+	auto* adapterId = new wxStaticText(this, wxID_ANY, wxString::FromUTF8(GetConfig().wiimote_usb_adapter.GetValue()));
+	adapter->Enable(!usb->GetValue());
+#if defined(_WIN32) && defined(HAS_LIBUSB) && HAS_WIIMOTE
+	usb->Bind(wxEVT_CHECKBOX, [adapter](wxCommandEvent& event) {
+		auto provider = std::static_pointer_cast<WiimoteControllerProvider>(InputManager::instance().get_api_provider(InputAPI::Wiimote));
+		provider->set_usb_bluetooth(event.IsChecked());
+		adapter->Enable(!event.IsChecked());
+	});
+	adapter->Bind(wxEVT_BUTTON, [this, adapterId](wxCommandEvent&) {
+		wxTextEntryDialog dialog(this, _("Enter the dedicated adapter's USB VID:PID from Device Manager (XXXX:YYYY).\nInstall WinUSB for that adapter using Zadig, not for your regular Bluetooth adapter."), _("Dedicated Bluetooth adapter"), wxString::FromUTF8(GetConfig().wiimote_usb_adapter.GetValue()));
+		if (dialog.ShowModal() != wxID_OK) return;
+		const auto value = dialog.GetValue().Lower().ToStdString();
+		if (!UsbBluetooth::ParseAdapterId(value)) {
+			wxMessageBox(_("Use four hexadecimal VID digits, a colon, and four PID digits, such as 0b05:1d70."), _("Invalid USB ID"), wxOK | wxICON_ERROR, this);
+			return;
+		}
+		auto provider = std::static_pointer_cast<WiimoteControllerProvider>(InputManager::instance().get_api_provider(InputAPI::Wiimote));
+		if (!provider->set_usb_bluetooth_adapter(value)) {
+			wxMessageBox(_("Turn off USB Bluetooth passthrough before changing adapters."), _("Adapter is active"), wxOK | wxICON_INFORMATION, this);
+			return;
+		}
+		adapterId->SetLabel(wxString::FromUTF8(value));
+		Layout();
+	});
+#else
+	usb->Disable();
+	adapter->Disable();
+#endif
+	sizer->Add(usb, 0, wxLEFT | wxRIGHT | wxBOTTOM, 5);
+	auto* adapterRow = new wxBoxSizer(wxHORIZONTAL);
+	adapterRow->Add(adapter, 0, wxRIGHT, 5);
+	adapterRow->Add(adapterId, 0, wxALIGN_CENTER_VERTICAL);
+	sizer->Add(adapterRow, 0, wxLEFT | wxRIGHT | wxBOTTOM, 5);
 
 	m_notebook = new wxNotebook(this, wxID_ANY);
 	for(size_t i = 0; i < InputManager::kMaxController; ++i)
@@ -118,7 +171,9 @@ InputSettings2::InputSettings2(wxWindow* parent)
 	m_timer = new wxTimer(this);
 	m_timer->Start(25);
 
-	m_controller_changed = EventService::instance().connect<Events::ControllerChanged>(&InputSettings2::on_controller_changed, this);
+	// A hotplug notification can arrive on the input worker. Keep wx access
+	// on the UI timer, and let in-flight notifications outlive this dialog safely.
+	m_controller_changed = EventService::instance().connect<Events::ControllerChanged>(+[](const std::shared_ptr<std::atomic_bool>& dirty) { dirty->store(true, std::memory_order_release); }, m_controller_dirty);
 }
 
 InputSettings2::~InputSettings2()
@@ -456,6 +511,7 @@ void InputSettings2::update_state()
 			case EmulatedController::Wiimote:
 				panel = new WiimoteInputPanel(page);
 				break;
+
 			default:
 				cemu_assert_debug(false);
 				return;
@@ -475,6 +531,7 @@ void InputSettings2::update_state()
 		panel->Show();
 		page->wxWindowBase::Layout();
 		page->wxWindow::Update();
+
 	}
 }
 
@@ -490,7 +547,14 @@ void InputSettings2::on_controller_changed()
 		if (!page_data_ptr)
 			continue;
 
-		const auto& page_data = page_data_ptr->ref();
+		auto& page_data = page_data_ptr->ref();
+		const auto assigned = InputManager::instance().get_controller(i);
+		if (page_data.m_controller != assigned)
+		{
+			page_data.m_controller = assigned;
+			page_data.m_profiles->ChangeValue(assigned && assigned->has_profile_name() ? wxString::FromUTF8(assigned->get_profile_name()) : kDefaultProfileName);
+			if (page == m_notebook->GetCurrentPage()) update_state();
+		}
 		if (page_data.m_controllers->GetSelection() != wxNOT_FOUND)
 		{
 			if (const auto data = (wxControllerData*)page_data.m_controllers->GetClientObject(page_data.m_controllers->GetSelection()))
@@ -510,12 +574,15 @@ void InputSettings2::on_controller_changed()
 void InputSettings2::on_notebook_page_changed(wxBookCtrlEvent& event)
 {
 	initialize_page(event.GetSelection());
+	on_controller_changed();
 	update_state();
 	event.Skip();
 }
 
 void InputSettings2::on_timer(wxTimerEvent&)
 {
+	if (m_controller_dirty->exchange(false, std::memory_order_acq_rel)) on_controller_changed();
+	if (get_current_page_data().m_controller != InputManager::instance().get_controller(m_notebook->GetSelection())) on_controller_changed();
 	auto& page_data = get_current_page_data();
 	if (!page_data.m_controller) {
 		return;
@@ -720,6 +787,11 @@ void InputSettings2::on_emulated_controller_selected(wxCommandEvent& event)
 
 			// set new controller
 			const auto new_controller = InputManager::instance().set_controller(page_index, type);
+			if (!new_controller)
+			{
+				update_state();
+				return;
+			}
 			page_data.m_controller = new_controller;
 
 			// append controllers if some were already added before
@@ -760,11 +832,13 @@ void InputSettings2::on_emulated_controller_dropdown(wxCommandEvent& event)
 
 	bool is_gamepad_selected = false;
 	bool is_wpad_selected = false;
+
 	const auto selected = emulated_controllers->GetSelection();
 	const auto selected_value = emulated_controllers->GetStringSelection();
 	if(selected != wxNOT_FOUND)
 	{
 		is_gamepad_selected = selected_value == wxString::FromUTF8(EmulatedController::type_to_string(EmulatedController::Type::VPAD));
+
 		is_wpad_selected = !is_gamepad_selected && selected != 0;
 	}
 
@@ -782,6 +856,7 @@ void InputSettings2::on_emulated_controller_dropdown(wxCommandEvent& event)
 		emulated_controllers->AppendString(wxString::FromUTF8(EmulatedController::type_to_string(EmulatedController::Type::Classic)));
 		emulated_controllers->AppendString(wxString::FromUTF8(EmulatedController::type_to_string(EmulatedController::Type::Wiimote)));
 	}
+
 
 	emulated_controllers->SetStringSelection(selected_value);
 }

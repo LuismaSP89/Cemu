@@ -96,3 +96,21 @@ release oficial.
 Cargar ZombiU, ponerse frente a una pared con una lámpara/fluorescente detrás:
 el halo no debe verse a través de la pared, ni quieto ni moviéndose, y al
 asomarse aparece con un fundido corto. Los FPS deben mantenerse en 30.
+
+## Rama `wiimote-bt-passthrough` (10-nov-2026)
+
+Port del soporte de Wii Remote de [GamesExObscura/CemuX](https://github.com/GamesExObscura/CemuX)
+(MPL-2.0, mismo licenciamiento que Cemu): Wii Remote/MotionPlus/Nunchuk con hotplug, asignación
+automática, batería, altavoz y **Bluetooth passthrough con un adaptador USB dedicado (WinUSB)**.
+Guía de uso y lista de ficheros en `docs/WIIMOTE-BLUETOOTH-PASSTHROUGH.md`.
+
+Cómo se hizo: CemuX es un único commit squash sin historia; su base de upstream está entre
+`ad73c1e0` (15-may-2026) y `dbec2c71` (13-jun-2026). Se generó el diff base→CemuX solo de los
+ficheros de la función (normalizado a LF) y se aplicó con `git apply -3` sobre `main`; conflictos en
+`padscore.cpp` (CafeStaticVar de upstream) y en `WiimoteControllerProvider.*` (arranque perezoso de
+hilos de upstream 52881127, que se conserva). Se quitaron a mano las dependencias de CemuX que no
+vienen al caso (HomeSession/procesos HOME, guitarra virtual, CompatibilityDiagnostics/autotest).
+No se tocaron VPAD, SDL ni DSU.
+
+Para integrarla en `main`: `git merge wiimote-bt-passthrough`. Al sincronizar con upstream, los
+conflictos esperables están en `WiimoteControllerProvider.cpp`, `padscore.cpp` e `InputManager.cpp`.

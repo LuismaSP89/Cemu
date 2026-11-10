@@ -30,17 +30,26 @@ public:
 		m_orientation[2] = _radToOrientation(m_imu.getRollRadians());
 	}
 
-	MotionSample getMotionSample()
+	MotionSample getMotionSample(bool debiasGyro = true)
 	{
 		float q[4];
 		m_imu.getQuaternion(q);
-		float gBias[3];
-		m_imu.getGyroBias(gBias);
-		float gyroDebiased[3];
-		gyroDebiased[0] = m_gyro[0] - gBias[0];
-		gyroDebiased[1] = m_gyro[1] - gBias[1];
-		gyroDebiased[2] = m_gyro[2] - gBias[2];
-		return MotionSample(m_acc, MotionSample::calculateAccAcceleration(m_prevAcc, m_acc), gyroDebiased, m_orientation, q);
+		float gyroOut[3];
+		if (debiasGyro)
+		{
+			float gBias[3];
+			m_imu.getGyroBias(gBias);
+			gyroOut[0] = m_gyro[0] - gBias[0];
+			gyroOut[1] = m_gyro[1] - gBias[1];
+			gyroOut[2] = m_gyro[2] - gBias[2];
+		}
+		else
+		{
+			gyroOut[0] = m_gyro[0];
+			gyroOut[1] = m_gyro[1];
+			gyroOut[2] = m_gyro[2];
+		}
+		return MotionSample(m_acc, MotionSample::calculateAccAcceleration(m_prevAcc, m_acc), gyroOut, m_orientation, q);
 	}
 private:
 

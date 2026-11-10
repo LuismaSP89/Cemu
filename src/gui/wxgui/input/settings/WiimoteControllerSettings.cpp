@@ -13,6 +13,7 @@
 #include "wxgui/helpers/wxHelpers.h"
 #include "wxgui/components/wxInputDraw.h"
 #include "wxgui/input/InputAPIAddWindow.h"
+#include "input/InputManager.h"
 
 #ifdef SUPPORTS_WIIMOTE
 
@@ -23,6 +24,7 @@ WiimoteControllerSettings::WiimoteControllerSettings(wxWindow* parent, const wxP
 	m_settings = m_controller->get_settings();
 	m_rumble_backup = m_settings.rumble;
 	m_packet_delay_backup = m_controller->get_packet_delay();
+	m_speaker_volume_backup = m_controller->get_speaker_volume();
 
 	this->SetSizeHints(wxDefaultSize, wxDefaultSize);
 
@@ -78,6 +80,32 @@ WiimoteControllerSettings::WiimoteControllerSettings(wxWindow* parent, const wxP
 			box_sizer->Add(row_sizer);
 		}
 
+		auto* speaker_row = new wxBoxSizer(wxHORIZONTAL);
+		speaker_row->Add(new wxStaticText(box, wxID_ANY, _("Speaker volume")), 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
+		m_speaker_volume = new wxSlider(box, wxID_ANY, m_controller->get_speaker_volume(), 0, 127);
+		m_speaker_volume->Bind(wxEVT_SLIDER, [this](wxCommandEvent&) {
+			m_controller->set_speaker_volume(static_cast<uint8>(m_speaker_volume->GetValue()));
+		});
+		speaker_row->Add(m_speaker_volume, 1, wxALL | wxEXPAND, 5);
+		box_sizer->Add(speaker_row, 0, wxEXPAND);
+		m_speaker_compatibility = new wxCheckBox(box, wxID_ANY, _("Speaker compatibility (3 kHz; DolphinBar/USB)"));
+		m_speaker_compatibility->SetValue(m_controller->get_speaker_compatibility());
+		m_speaker_compatibility->SetToolTip(_("Works with DolphinBar/HID and dedicated USB Bluetooth. Reduces speaker detail and packet traffic; does not change motion input. Set before launching the game, or restart after changing it."));
+		box_sizer->Add(m_speaker_compatibility, 0, wxALL, 5);
+		m_usb_bluetooth = new wxCheckBox(box, wxID_ANY, _("USB Bluetooth passthrough"));
+		m_usb_bluetooth->SetValue(m_controller->usb_bluetooth_enabled());
+		m_usb_bluetooth->SetToolTip(_("Requires a dedicated USB Bluetooth adapter with WinUSB. Applies after OK."));
+#if !defined(_WIN32) || !defined(HAS_LIBUSB)
+		m_usb_bluetooth->Disable();
+#endif
+		box_sizer->Add(m_usb_bluetooth, 0, wxALL, 5);
+		m_usb_status = new wxStaticText(box, wxID_ANY, wxString::FromUTF8(m_controller->usb_bluetooth_status()));
+		m_usb_status->Wrap(390);
+		m_usb_status->SetMinSize(wxSize(390, 42));
+		box_sizer->Add(m_usb_status, 0, wxLEFT | wxRIGHT | wxBOTTOM, 5);
+		auto* sync_hint = new wxStaticText(box, wxID_ANY, _("Press red SYNC to pair; A reconnects.\nController slots are assigned automatically."));
+		sync_hint->Wrap(390);
+		box_sizer->Add(sync_hint, 0, wxALL, 5);
 		sizer->Add(box_sizer, 0, wxALL | wxEXPAND, 5);
 	}
 
@@ -239,6 +267,7 @@ WiimoteControllerSettings::WiimoteControllerSettings(wxWindow* parent, const wxP
 
 WiimoteControllerSettings::~WiimoteControllerSettings()
 {
+	if (GetReturnCode() == wxID_CANCEL) m_controller->set_speaker_volume(m_speaker_volume_backup);
 	m_controller->stop_rumble();
 	m_timer->Stop();
 }
@@ -247,6 +276,10 @@ void WiimoteControllerSettings::update_settings()
 {
 	// update settings
 	m_controller->set_settings(m_settings);
+	m_controller->set_speaker_volume(static_cast<uint8>(m_speaker_volume->GetValue()));
+	m_controller->set_speaker_compatibility(m_speaker_compatibility->GetValue());
+	if (m_controller->usb_bluetooth_enabled() != m_usb_bluetooth->GetValue())
+		m_controller->set_usb_bluetooth(m_usb_bluetooth->GetValue());
 	if (m_use_motion)
 		m_controller->set_use_motion(m_use_motion->GetValue());
 
@@ -255,6 +288,8 @@ void WiimoteControllerSettings::update_settings()
 
 void WiimoteControllerSettings::on_timer(wxTimerEvent& event)
 {
+	const auto usbStatus = wxString::FromUTF8(m_controller->usb_bluetooth_status());
+	if (m_usb_status->GetLabel() != usbStatus) { m_usb_status->SetLabel(usbStatus); m_usb_status->Wrap(390); Layout(); }
 	if (m_rumble_time.has_value() && std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_rumble_time.value()).count() > 500)
 	{
 		m_controller->stop_rumble();

@@ -14,6 +14,7 @@ std::string_view EmulatedController::type_to_string(Type type)
 	case Pro: return "Wii U Pro Controller";
 	case Classic: return "Wii U Classic Controller";
 	case Wiimote: return "Wiimote";
+
 	}
 
 	throw std::runtime_error(fmt::format("unknown emulated controller: {}", stdx::to_underlying(type)));
@@ -30,12 +31,14 @@ EmulatedController::Type EmulatedController::type_from_string(std::string_view s
 	else if (str == "Wiimote")
 		return Wiimote;
 
+
 	throw std::runtime_error(fmt::format("unknown emulated controller: {}", str));
 }
 
 EmulatedController::EmulatedController(size_t player_index)
 	: m_player_index(player_index)
 {
+	m_player_led_index = player_index;
 }
 
 void EmulatedController::calibrate()
@@ -224,11 +227,20 @@ void EmulatedController::add_controller(std::shared_ptr<ControllerBase> controll
 
     #ifdef SUPPORTS_WIIMOTE
     if (const auto wiimote = std::dynamic_pointer_cast<NativeWiimoteController>(controller)) {
-		wiimote->set_player_index(m_player_index);
+		wiimote->set_player_index(m_player_led_index.load());
 	}
     #endif
 	std::scoped_lock lock(m_mutex);
 	m_controllers.emplace_back(std::move(controller));
+}
+
+void EmulatedController::set_player_led_index(size_t index)
+{
+	m_player_led_index = index;
+#ifdef SUPPORTS_WIIMOTE
+	for (const auto& input : controllers_snapshot())
+		if (const auto native = std::dynamic_pointer_cast<NativeWiimoteController>(input)) native->set_player_index(index);
+#endif
 }
 
 void EmulatedController::remove_controller(const std::shared_ptr<ControllerBase>& controller)

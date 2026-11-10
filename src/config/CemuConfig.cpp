@@ -26,10 +26,13 @@ XMLConfigParser CemuConfig::Load(XMLConfigParser& parser)
 	mlc_path = mlc;
 
 	permanent_storage = parser.get("permanent_storage", permanent_storage);
+	automaticControllerSetup = parser.get("automatic_controller_setup", false);
 
 	proxy_server = parser.get("proxy_server", "");
 	disable_screensaver = parser.get("disable_screensaver", disable_screensaver);
 	play_boot_sound = parser.get("play_boot_sound", play_boot_sound);
+	wiimote_usb_bluetooth = parser.get("wiimote_usb_bluetooth", false);
+	wiimote_usb_adapter = parser.get("wiimote_usb_adapter", std::string("0b05:1d70"));
 	console_language = parser.get("console_language", console_language.GetInitValue());
 
 	game_paths.clear();
@@ -290,6 +293,7 @@ XMLConfigParser CemuConfig::Load(XMLConfigParser& parser)
 	emulated_usb_devices.emulate_infinity_base = usbdevices.get("EmulateInfinityBase", emulated_usb_devices.emulate_infinity_base);
 	emulated_usb_devices.emulate_dimensions_toypad = usbdevices.get("EmulateDimensionsToypad", emulated_usb_devices.emulate_dimensions_toypad);
 
+
 	return parser;
 }
 
@@ -301,9 +305,12 @@ XMLConfigParser CemuConfig::Save(XMLConfigParser& parser)
 	config.set("advanced_ppc_logging", advanced_ppc_logging.GetValue());
 	config.set("mlc_path", mlc_path.GetValue().c_str());
 	config.set<bool>("permanent_storage", permanent_storage);
+	config.set<bool>("automatic_controller_setup", automaticControllerSetup.GetValue());
 	config.set("proxy_server", proxy_server.GetValue().c_str());
 	config.set<bool>("disable_screensaver", disable_screensaver);
 	config.set<bool>("play_boot_sound", play_boot_sound);
+	config.set<bool>("wiimote_usb_bluetooth", wiimote_usb_bluetooth);
+	config.set("wiimote_usb_adapter", wiimote_usb_adapter.GetValue().c_str());
 
 	// config.set("cpu_mode", cpu_mode.GetValue());
 	//config.set("console_region", console_region.GetValue());
@@ -454,6 +461,7 @@ XMLConfigParser CemuConfig::Save(XMLConfigParser& parser)
 	usbdevices.set("EmulateSkylanderPortal", emulated_usb_devices.emulate_skylander_portal.GetValue());
 	usbdevices.set("EmulateInfinityBase", emulated_usb_devices.emulate_infinity_base.GetValue());
 	usbdevices.set("EmulateDimensionsToypad", emulated_usb_devices.emulate_dimensions_toypad.GetValue());
+
 
 	return config;
 }

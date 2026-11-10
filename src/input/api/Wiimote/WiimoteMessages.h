@@ -1,5 +1,8 @@
 #pragma once
 
+#include "input/api/Wiimote/MotionPlusZeroCalibration.h"
+#include "input/api/Wiimote/MotionPlusFactoryCalibration.h"
+
 // https://wiibrew.org/wiki/Wiimote
 
 enum InputReportId : uint8
@@ -37,10 +40,13 @@ enum RegisterAddress : uint32
 	kRegisterExtension2 = 0x4a400fb,
 	kRegisterExtensionType = 0x4a400fa,
 	kRegisterExtensionCalibration = 0x4a40020,
+	kRegisterPassthroughType = 0x4a400f6,
+	kRegisterPassthroughMode = 0x4a400fe,
 
 	kRegisterMotionPlusDetect = 0x4a600fa,
 	kRegisterMotionPlusInit = 0x4a600f0,
 	kRegisterMotionPlusEnable = 0x4a600fe,
+	kRegisterMotionPlusCalibration = 0x4a40020,
 };
 
 enum ExtensionType : uint64
@@ -79,6 +85,7 @@ enum StatusBitmask : uint8
 
 enum OutputReportId : uint8
 {
+	kRumble = 0x10,
 	kLED = 0x11,
 	kType = 0x12,
 	kIR = 0x13,
@@ -210,7 +217,17 @@ struct MotionPlusData
 {
 	Calibration calibration{};
 
-	glm::vec3 orientation; // yaw, roll, pitch
+	glm::vec<3, uint16> raw{};
+	MotionPlusZeroCalibration zero_calibration{};
+	MotionPlusFactoryCalibration factory_calibration{};
+	bool factory_calibration_loaded = false;
+	bool factory_calibration_pending = false;
+	uint32 factory_calibration_attempts = 0;
+	// Axis order follows the Wii MotionPlus model used by Dolphin and the Wii U docs:
+	// X = pitch, Y = roll, Z = yaw.
+	glm::vec3 angular_velocity{}; // pitch, roll, yaw in rad/sec
+	glm::vec3 orientation{}; // roll, pitch, yaw raw delta
+	uint32 filler_reports = 0;
 	bool slow_roll = false;
 	bool slow_pitch = false;
 	bool slow_yaw = false;

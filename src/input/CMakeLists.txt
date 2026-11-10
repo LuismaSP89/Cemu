@@ -31,6 +31,10 @@ add_library(CemuInput
 	emulated/VPADController.h
 	emulated/ClassicController.cpp
 	emulated/ClassicController.h
+	emulated/ButtonRepeatPulse.h
+	AutoControllerSwitch.h
+	ControllerBattery.h
+	WpadChannelOrder.h
 )
 
 set_property(TARGET CemuInput PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -73,12 +77,48 @@ if (SUPPORTS_WIIMOTE)
 			api/Wiimote/NativeWiimoteController.h
 			api/Wiimote/NativeWiimoteController.cpp
 			api/Wiimote/WiimoteDevice.h
+			api/Wiimote/MotionPlusFactoryCalibration.h
+			api/Wiimote/MotionPlusZeroCalibration.h
+			api/Wiimote/WiimoteAudioWriteQueue.h
+			api/Wiimote/WiimoteAutoSlots.h
+			api/Wiimote/WiimoteBattery.h
+			api/Wiimote/WiimoteIrReference.h
+			api/Wiimote/WiimoteKpadMotion.h
+			api/Wiimote/WiimoteLifecycle.h
+			api/Wiimote/WiimoteOutputGate.h
+			api/Wiimote/WiimoteOutputSchedule.h
+			api/Wiimote/WiimoteOutputWait.h
+			api/Wiimote/WiimotePointerFilter.h
+			api/Wiimote/WiimoteProbeThrottle.h
+			api/Wiimote/WiimoteReportRecovery.h
+			api/Wiimote/WiimoteSpeaker.h
+			api/Wiimote/WiimoteSpeakerCompatibility.h
+			api/Wiimote/WiimoteSpeakerProtocol.h
+			api/Wiimote/WiimoteSpeakerTrace.h
+			api/Wiimote/WiimoteStateCache.h
 	)
 	if (ENABLE_HIDAPI)
 		target_sources(CemuInput PRIVATE
 				api/Wiimote/hidapi/HidapiWiimote.cpp
 				api/Wiimote/hidapi/HidapiWiimote.h)
+		if (WIN32)
+			target_sources(CemuInput PRIVATE api/Wiimote/hidapi/WindowsSpeakerWriter.h)
+		endif ()
 	endif ()
+	if (WIN32 AND ENABLE_LIBUSB)
+		# Bluetooth passthrough through a dedicated USB adapter (WinUSB via libusb)
+		target_sources(CemuInput PRIVATE
+			api/Wiimote/usb/UsbBluetoothHost.cpp
+			api/Wiimote/usb/UsbBluetoothHost.h
+			api/Wiimote/usb/UsbBluetoothAdapter.h
+			api/Wiimote/usb/UsbBluetoothBonds.h
+			api/Wiimote/usb/UsbBluetoothPcm.h
+			api/Wiimote/usb/UsbBluetoothProtocol.h
+			api/Wiimote/usb/UsbBluetoothTrace.h)
+		find_package(libusb MODULE REQUIRED)
+		target_link_libraries(CemuInput PRIVATE libusb::libusb Crypt32)
+	endif ()
+
 
 	if (ENABLE_BLUEZ)
 		target_sources(CemuInput PRIVATE

@@ -34,6 +34,11 @@ private:
 	wxStaticText* m_extension_text;
 
 	wxSlider* m_package_delay;
+	wxSlider* m_speaker_volume;
+	uint8 m_speaker_volume_backup{};
+	wxCheckBox* m_speaker_compatibility = nullptr;
+	wxCheckBox* m_usb_bluetooth = nullptr;
+	wxStaticText* m_usb_status = nullptr;
 	wxCheckBox* m_rumble = nullptr;
 	wxCheckBox* m_use_motion = nullptr;
 

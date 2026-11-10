@@ -3,6 +3,7 @@
 #include "input/InputManager.h"
 #include "input/motion/MotionSample.h"
 #include "input/api/ControllerState.h"
+#include "input/ControllerBattery.h"
 
 namespace pugi
 {
@@ -100,6 +101,7 @@ public:
 		
 	virtual bool has_battery() { return false; }
 	virtual bool has_low_battery() { return false; }
+	virtual std::optional<uint8> get_battery_percentage() const { return std::nullopt; }
 
 	const ControllerState& calibrate();
 	const ControllerState& update_state();

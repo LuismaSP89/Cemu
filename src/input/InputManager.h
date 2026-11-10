@@ -20,7 +20,9 @@
 #include "input/emulated/VPADController.h"
 #include "input/emulated/WPADController.h"
 
+
 #include "util/helpers/Singleton.h"
+#include "input/AutoControllerSwitch.h"
 
 class InputManager : public Singleton<InputManager>
 {
@@ -57,6 +59,7 @@ public:
 	EmulatedControllerPtr get_controller(size_t player_index) const;
 	std::shared_ptr<VPADController> get_vpad_controller(size_t index) const;
 	std::shared_ptr<WPADController> get_wpad_controller(size_t index) const;
+
 	std::pair<size_t, size_t> get_controller_count() const;
 
 	bool is_api_available(InputAPI::Type api) const { return !m_api_available[api].empty(); }
@@ -73,6 +76,9 @@ public:
 
 	void apply_game_profile();
 	void on_device_changed();
+	void request_wiimote_pairing() { m_wiimote_pairing_requested.store(true, std::memory_order_release); }
+	bool automatic_setup_enabled() const { return m_auto_configure_enabled.load(); }
+	void set_automatic_setup(bool enabled) { m_auto_configure_enabled.store(enabled); }
 
 
 	static std::vector<std::string> get_profiles();
@@ -96,6 +102,23 @@ public:
 
 private:
 	void update_thread();
+	void auto_configure_wiimotes();
+	void reconcile_wpad_channels();
+	void auto_configure_controllers();
+	void auto_configure_slot(size_t player);
+	EmulatedControllerPtr read_controller_profile(size_t player_index, const fs::path& file_path, bool inactive = false);
+	std::atomic_bool m_auto_configure_enabled{false};
+	std::array<std::weak_ptr<EmulatedController>, kMaxWPADControllers> m_live_wpad_channels;
+	std::atomic_bool m_wiimote_pairing_requested{false};
+	std::array<std::atomic<bool>,kMaxController> m_auto_managed{}, m_auto_present{};
+	mutable std::mutex m_auto_configure_mutex, m_auto_profile_mutex;
+	struct AutomaticSlot
+	{
+		std::array<EmulatedControllerPtr,2> profiles{};
+		AutoControllerSwitch::Handoff handoff;
+	};
+	std::array<AutomaticSlot,kMaxController> m_auto_slots{};
+	std::atomic<bool> m_profiles_loaded{false};
 
 	std::thread m_update_thread;
 	std::atomic<bool> m_update_thread_shutdown{false};
@@ -105,6 +128,7 @@ private:
 	mutable std::shared_mutex m_mutex;
 	std::array<EmulatedControllerPtr, kMaxVPADControllers> m_vpad;
 	std::array<EmulatedControllerPtr, kMaxWPADControllers> m_wpad;
+
 
 	std::array<bool, kMaxController> m_is_gameprofile_set{};
 

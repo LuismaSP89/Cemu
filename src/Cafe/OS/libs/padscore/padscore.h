@@ -108,17 +108,17 @@ static_assert(sizeof(KPADEXStatus_t) == 0x50);
 
 struct KPADMPDir_t
 {
-	padVec3D_t X;
-	padVec3D_t Y;
-	padVec3D_t Z;
+	beVec3D_t X;
+	beVec3D_t Y;
+	beVec3D_t Z;
 };
 
 static_assert(sizeof(KPADMPDir_t) == 0x24);
 
 struct KPADMPStatus_t
 {
-	padVec3D_t mpls;
-	padVec3D_t angle;
+	beVec3D_t mpls;
+	beVec3D_t angle;
 	KPADMPDir_t dir;
 };
 
@@ -152,6 +152,7 @@ struct KPADStatus_t
 };
 
 static_assert(sizeof(KPADStatus_t) == 0xF0);
+static_assert(offsetof(KPADStatus_t, mpls) == 0xB0);
 
 #define WPAD_DPD_MAX_OBJECTS (4)
 
@@ -281,4 +282,12 @@ typedef struct KPADUnifiedWpadStatus
 }KPADUnifiedWpadStatus_t;
 
 static_assert(sizeof(KPADUnifiedWpadStatus_t) == 0x44);
+
+namespace padscore
+{
+    uint8 WPADGetSpeakerVolume();
+    void WPADSetSpeakerVolume(uint8 volume);
+    bool WPADMotorsEnabled();
+    void WPADEnableMotor(bool enabled);
+}
 

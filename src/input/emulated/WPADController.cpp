@@ -1,13 +1,115 @@
 #include <api/Controller.h>
 #include "input/emulated/WPADController.h"
+#include "input/emulated/ButtonRepeatPulse.h"
 
+
+
+#include <algorithm>
+
+#include "input/api/Wiimote/NativeWiimoteController.h"
+#include "input/api/Wiimote/WiimoteControllerProvider.h"
 #include "input/emulated/ClassicController.h"
 #include "input/emulated/ProController.h"
 #include "input/emulated/WiimoteController.h"
 
+#include <cstring>
+
 WPADController::WPADController(size_t player_index, WPADDataFormat data_format)
 	: EmulatedController(player_index), m_data_format(data_format)
 {
+}
+
+bool WPADController::is_guest_connected() const
+{
+	std::shared_lock lock(m_mutex);
+	bool has_native = false;
+	for (const auto& controller : m_controllers)
+	{
+		if (controller->api() != InputAPI::Wiimote)
+			continue;
+		has_native = true;
+		if (controller->is_connected())
+			return true;
+	}
+	// A virtual Wiimote is intentionally connected by its configured profile.
+	// A real Wiimote profile must not turn an absent remote into a guest device.
+	return !has_native && !m_controllers.empty();
+}
+
+bool WPADController::is_mpls_ready() const
+{
+	std::shared_lock lock(m_mutex);
+	for (const auto& controller : m_controllers)
+	{
+		const auto native = std::dynamic_pointer_cast<NativeWiimoteController>(controller);
+		if (native)
+			return native->is_connected() && native->get_motion_plus_data().has_value();
+	}
+	lock.unlock();
+	const auto device = get_device_type();
+	return device == kWAPDevMPLS || device == kWAPDevMPLSFreeStyle || device == kWAPDevMPLSClassic;
+}
+
+bool WPADController::is_mpls_calibrated() const
+{
+	std::shared_lock lock(m_mutex);
+	for (const auto& controller : m_controllers)
+	{
+		const auto native = std::dynamic_pointer_cast<NativeWiimoteController>(controller);
+		if (native)
+		{
+			const auto sample = native->get_motion_plus_data();
+			return sample && sample->zero_calibration.ready && native->get_kpad_motion().ready;
+		}
+	}
+	return true;
+}
+
+static bool IsDataFormatCompatible(WPADDataFormat format, WPADDeviceType device_type)
+{
+	switch (device_type)
+	{
+	case kWAPDevCore:
+		return format == kDataFormat_CORE || format == kDataFormat_CORE_ACC || format == kDataFormat_CORE_ACC_DPD || format == kDataFormat_CORE_ACC_DPD_FULL;
+	case kWAPDevFreestyle:
+	case kWAPDevMPLSFreeStyle:
+		return format == kDataFormat_FREESTYLE || format == kDataFormat_FREESTYLE_ACC || format == kDataFormat_FREESTYLE_ACC_DPD;
+	case kWAPDevClassic:
+	case kWAPDevMPLSClassic:
+		return format == kDataFormat_CLASSIC || format == kDataFormat_CLASSIC_ACC || format == kDataFormat_CLASSIC_ACC_DPD;
+	case kWAPDevMPLS:
+		return format == kDataFormat_MPLS;
+	case kWAPDevURCC:
+		return format == kDataFormat_URCC;
+	default:
+		return true;
+	}
+}
+
+void WPADController::set_data_format(WPADDataFormat data_format)
+{
+	m_data_format = data_format;
+	m_data_format_user_set = true;
+	m_last_data_format_device_type = get_device_type();
+}
+
+void WPADController::sync_data_format()
+{
+	const auto device_type = get_device_type();
+	const auto desired_format = get_default_data_format();
+
+	if (m_data_format_user_set)
+	{
+		if (IsDataFormatCompatible(m_data_format, device_type))
+			m_last_data_format_device_type = device_type;
+		return;
+	}
+
+	if (m_last_data_format_device_type != device_type || m_data_format != desired_format)
+	{
+		m_data_format = desired_format;
+		m_last_data_format_device_type = device_type;
+	}
 }
 
 WPADDataFormat WPADController::get_default_data_format() const
@@ -67,6 +169,7 @@ uint32 WPADController::get_emulated_button_flag(WPADDataFormat format, uint32 id
 
 void WPADController::WPADRead(WPADStatus_t* status)
 {
+	sync_data_format();
 	controllers_update_states();
 	uint32 button = 0;
 	for (uint32 i = 1; i < get_highest_mapping_id(); ++i)
@@ -146,8 +249,45 @@ void WPADController::WPADRead(WPADStatus_t* status)
 	case kDataFormat_MPLS:
 	{
 		WPADMPStatus_t* ex_status = (WPADMPStatus_t*)status;
-		ex_status->stat = 1; // attached
-		// TODO
+		memset(ex_status, 0x00, sizeof(*ex_status));
+		ex_status->button = button;
+		ex_status->stat = is_mpls_attached() ? 1 : 0;
+		static uint32 s_mplsLogCounter[4]{};
+
+		for (const auto& controller : m_controllers)
+		{
+			if (controller->api() != InputAPI::Wiimote)
+				continue;
+
+			auto* wiimote = static_cast<NativeWiimoteController*>(controller.get());
+			const auto motion_plus = wiimote->get_motion_plus_data();
+			if (!motion_plus)
+				continue;
+
+			// Use the validated delta, including zero output during startup calibration.
+			const sint32 roll = static_cast<sint32>(std::round(motion_plus->orientation.x));
+			const sint32 pitch = static_cast<sint32>(std::round(motion_plus->orientation.y));
+			const sint32 yaw = static_cast<sint32>(std::round(motion_plus->orientation.z));
+
+			ex_status->pitch = static_cast<uint16>(std::clamp<sint32>(pitch + 0x1F7F, 0, 0xFFFF));
+			ex_status->yaw = static_cast<uint16>(std::clamp<sint32>(yaw + 0x1F7F, 0, 0xFFFF));
+			ex_status->roll = static_cast<uint16>(std::clamp<sint32>(roll + 0x1F7F, 0, 0xFFFF));
+
+			const size_t log_index = std::min<size_t>(m_player_index, 3);
+			if ((s_mplsLogCounter[log_index]++ % 20) == 0)
+			{
+				cemuLog_log(
+					LogType::InputAPI,
+					"WPAD MPLS[{}] raw=({},{},{}) bias=({},{},{}) centered=({},{},{}) out=({},{},{}) slow=({},{},{})",
+					m_player_index,
+					motion_plus->raw.x, motion_plus->raw.y, motion_plus->raw.z,
+					motion_plus->zero_calibration.bias[0], motion_plus->zero_calibration.bias[1], motion_plus->zero_calibration.bias[2],
+					roll, pitch, yaw,
+					ex_status->roll.value(), ex_status->pitch.value(), ex_status->yaw.value(),
+					motion_plus->slow_roll, motion_plus->slow_pitch, motion_plus->slow_yaw);
+			}
+			break;
+		}
 		break;
 	}
 	case kDataFormat_URCC:
@@ -181,6 +321,8 @@ void WPADController::WPADRead(WPADStatus_t* status)
 
 void WPADController::KPADRead(KPADStatus_t& status, const BtnRepeat& repeat)
 {
+	std::optional<WiimoteKpadMotion::Sample> native_pose;
+	sync_data_format();
 	uint32be* hold, *release, *trigger;
 	switch (type())
 	{
@@ -214,27 +356,13 @@ void WPADController::KPADRead(KPADStatus_t& status, const BtnRepeat& repeat)
 	
 	// button repeat
 	const auto now = std::chrono::steady_clock::now();
-	if (*hold != m_last_holdvalue)
-	{
-		m_last_hold_change = m_last_pulse = now;
-	}
-
-	if (repeat.pulse > 0)
-	{
-		if (m_last_hold_change + std::chrono::milliseconds(repeat.delay) >= now)
-		{
-			if ((m_last_pulse + std::chrono::milliseconds(repeat.pulse)) < now)
-			{
-				m_last_pulse = now;
-				*hold |= kWPADButtonRepeat;
-			}
-		}
-	}
+	if (input::ButtonRepeatPulse<std::chrono::steady_clock>(*hold, m_last_holdvalue,
+		kWPADButtonRepeat, repeat.delay, repeat.pulse, now, m_last_hold_change, m_last_pulse))
+		*hold |= kWPADButtonRepeat;
 
 	// axis
 	const auto axis = get_axis();
 	const auto rotation = get_rotation();
-
 	*release = m_last_holdvalue & ~*hold;
 	//status.release = m_last_holdvalue & ~*hold;
 	*trigger = ~m_last_holdvalue & *hold;
@@ -279,25 +407,20 @@ void WPADController::KPADRead(KPADStatus_t& status, const BtnRepeat& repeat)
 
 		if (is_mpls_attached())
 		{
-			// todo
 			glm::vec3 gyroChange;
-			motion_sample.getVPADGyroChange(&gyroChange[0]);
-			//const auto& gyroChange = motionSample.getVPADGyroChange();
+			motion_sample.getKPADGyroChange(&gyroChange[0]);
 			status.mpls.mpls.x = gyroChange.x;
 			status.mpls.mpls.y = gyroChange.y;
 			status.mpls.mpls.z = gyroChange.z;
 
-			//debug_printf("GyroChange %7.2lf %7.2lf %7.2lf\n", (float)status.gyroChange.x, (float)status.gyroChange.y, (float)status.gyroChange.z);
-
 			glm::vec3 gyroOrientation;
-			motion_sample.getVPADOrientation(&gyroOrientation[0]);
-			//const auto& gyroOrientation = motionSample.getVPADOrientation();
+			motion_sample.getKPADOrientation(&gyroOrientation[0]);
 			status.mpls.angle.x = gyroOrientation.x;
 			status.mpls.angle.y = gyroOrientation.y;
 			status.mpls.angle.z = gyroOrientation.z;
 
 			float attitude[9];
-			motion_sample.getVPADAttitudeMatrix(attitude);
+			motion_sample.getKPADAttitudeMatrix(attitude);
 			status.mpls.dir.X.x = attitude[0];
 			status.mpls.dir.X.y = attitude[1];
 			status.mpls.dir.X.z = attitude[2];
@@ -307,15 +430,53 @@ void WPADController::KPADRead(KPADStatus_t& status, const BtnRepeat& repeat)
 			status.mpls.dir.Z.x = attitude[6];
 			status.mpls.dir.Z.y = attitude[7];
 			status.mpls.dir.Z.z = attitude[8];
+
+#if SUPPORTS_WIIMOTE
+			// Match get_motion_data's first enabled source; other providers retain
+			// their existing GamePad/SDL conversion and MotionSample ABI.
+			{
+				std::shared_lock lock(m_mutex);
+				for (const auto& source : m_controllers)
+				{
+					if (!source->use_motion()) continue;
+					if (const auto native = std::dynamic_pointer_cast<NativeWiimoteController>(source))
+					{
+						const auto pose = native->get_kpad_motion();
+						native_pose = pose;
+						status.acc = {pose.acceleration[0], pose.acceleration[1], pose.acceleration[2]};
+						status.mpls.mpls = {pose.gyro[0], pose.gyro[1], pose.gyro[2]};
+						status.mpls.angle = {pose.angle[0], pose.angle[1], pose.angle[2]};
+						status.mpls.dir.X = {pose.dir[0][0], pose.dir[0][1], pose.dir[0][2]};
+						status.mpls.dir.Y = {pose.dir[1][0], pose.dir[1][1], pose.dir[1][2]};
+						status.mpls.dir.Z = {pose.dir[2][0], pose.dir[2][1], pose.dir[2][2]};
+					}
+					break;
+				}
+			}
+#endif
+
+			static uint32 s_kpadMplsLogCounter[4]{};
+			const size_t log_index = std::min<size_t>(m_player_index, 3);
+			const float gyro_mag = std::sqrt(
+				static_cast<float>(status.mpls.mpls.x * status.mpls.mpls.x) +
+				static_cast<float>(status.mpls.mpls.y * status.mpls.mpls.y) +
+				static_cast<float>(status.mpls.mpls.z * status.mpls.mpls.z));
+			if (gyro_mag > 0.0001f || (s_kpadMplsLogCounter[log_index]++ % 20) == 0)
+			{
+				cemuLog_log(
+					LogType::InputAPI,
+					"KPAD MPLS[{}] gyro=({:.5f},{:.5f},{:.5f}) angle=({:.5f},{:.5f},{:.5f}) acc=({:.5f},{:.5f},{:.5f})",
+					static_cast<uint32>(m_player_index),
+					static_cast<float>(status.mpls.mpls.x), static_cast<float>(status.mpls.mpls.y), static_cast<float>(status.mpls.mpls.z),
+					static_cast<float>(status.mpls.angle.x), static_cast<float>(status.mpls.angle.y), static_cast<float>(status.mpls.angle.z),
+					static_cast<float>(status.acc.x), static_cast<float>(status.acc.y), static_cast<float>(status.acc.z));
+			}
 		}
 	}
 	auto visibility = GetPositionVisibility();
 	if (has_position() && visibility != PositionVisibility::NONE)
 	{
-		if (visibility == PositionVisibility::FULL)
-			status.dpd_valid_fg = 2;
-		else
-			status.dpd_valid_fg = -1;
+		status.dpd_valid_fg = 2;
 
 		const auto position = get_position();
 
@@ -323,19 +484,56 @@ void WPADController::KPADRead(KPADStatus_t& status, const BtnRepeat& repeat)
 		status.pos.x = pos.x;
 		status.pos.y = pos.y;
 
-		const auto delta = position - get_prev_position();
-		status.vec.x = delta.x;
-		status.vec.y = delta.y;
-		status.speed = glm::length(delta);
+		if (visibility == PositionVisibility::FULL)
+		{
+			const auto delta = position - get_prev_position();
+			status.vec.x = delta.x;
+			status.vec.y = delta.y;
+			status.speed = glm::length(delta);
+		}
+		else
+		{
+			status.vec.x = 0.0f;
+			status.vec.y = 0.0f;
+			status.speed = 0.0f;
+		}
 	}
 	else
 		status.dpd_valid_fg = 0;
+	if (native_pose)
+	{
+		// Held/one-dot pointer positions are usable, but not a two-dot attitude reference.
+		const auto& ir = native_pose->ir;
+		status.dpd_valid_fg = visibility == PositionVisibility::NONE ? 0 : ir.valid ? 2 : 1;
+		if (ir.valid)
+		{
+			status.horizon = {ir.horizon[0], ir.horizon[1]};
+			status.dist = ir.distance;
+		}
+	}
 
 	switch (type())
 	{
 	case Wiimote:
 		status.ex_status.fs.stick.x = axis.x;
 		status.ex_status.fs.stick.y = axis.y;
+		{
+			static uint32 s_kpadFsLogCounter[4]{};
+			const size_t log_index = std::min<size_t>(m_player_index, 3);
+			const float stick_mag = glm::length(axis);
+			if (stick_mag > 0.05f || (s_kpadFsLogCounter[log_index]++ % 20) == 0)
+			{
+				cemuLog_log(
+					LogType::InputAPI,
+					"KPAD FS[{}] devType={} format={} stick=({:.4f},{:.4f}) hold=0x{:08x}",
+					static_cast<uint32>(m_player_index),
+					static_cast<uint32>(get_device_type()),
+					static_cast<uint32>(m_data_format),
+					static_cast<float>(status.ex_status.fs.stick.x),
+					static_cast<float>(status.ex_status.fs.stick.y),
+					static_cast<uint32>(*hold));
+			}
+		}
 
 		if(has_second_motion())
 		{

@@ -136,17 +136,33 @@ public:
 
 	void getVPADGyroChange(float gyro[3])
 	{
-		// filter noise
-		if (fabs(gyro[0]) < 0.012f)
-			gyro[0] = 0.0f;
-		if (fabs(gyro[1]) < 0.012f)
-			gyro[1] = 0.0f;
-		if (fabs(gyro[2]) < 0.012f)
-			gyro[2] = 0.0f;
-		// convert
 		gyro[0] = _radToOrientation(-m_gyro[0]);
 		gyro[1] = _radToOrientation(-m_gyro[1]);
 		gyro[2] = _radToOrientation(m_gyro[2]);
+
+		// filter noise
+		if (fabs(gyro[0]) < 0.0015f)
+			gyro[0] = 0.0f;
+		if (fabs(gyro[1]) < 0.0015f)
+			gyro[1] = 0.0f;
+		if (fabs(gyro[2]) < 0.0015f)
+			gyro[2] = 0.0f;
+	}
+
+	void getKPADGyroChange(float gyro[3])
+	{
+		gyro[0] = _radToOrientation(m_gyro[0]);
+		gyro[1] = _radToOrientation(m_gyro[1]);
+		gyro[2] = _radToOrientation(m_gyro[2]);
+
+		// Keep a very small deadzone for KPAD so a real remote can still settle,
+		// but do not flatten live MotionPlus movement the way the VPAD helper can.
+		if (fabs(gyro[0]) < 0.00025f)
+			gyro[0] = 0.0f;
+		if (fabs(gyro[1]) < 0.00025f)
+			gyro[1] = 0.0f;
+		if (fabs(gyro[2]) < 0.00025f)
+			gyro[2] = 0.0f;
 	}
 
 	void getVPADAccelerometer(float acc[3])
@@ -205,6 +221,31 @@ public:
 		getXVector(mtx + 6, qZ);
 	}
 
+	void getKPADOrientation(float orientation[3])
+	{
+		const float pitch = _radToOrientation(_getPitchRadians());
+		const float roll = _radToOrientation(_getRollRadians());
+		const float yaw = _radToOrientation(_getYawRadians());
+		orientation[0] = pitch;
+		orientation[1] = roll;
+		orientation[2] = yaw;
+	}
+
+	void getKPADAttitudeMatrix(float mtx[9])
+	{
+		Quaternionf q(m_q[0], m_q[1], m_q[2], m_q[3]);
+		auto [xVec, yVec, zVec] = q.GetRotationMatrix();
+		mtx[0] = xVec.x;
+		mtx[1] = xVec.y;
+		mtx[2] = xVec.z;
+		mtx[3] = yVec.x;
+		mtx[4] = yVec.y;
+		mtx[5] = yVec.z;
+		mtx[6] = zVec.x;
+		mtx[7] = zVec.y;
+		mtx[8] = zVec.z;
+	}
+
 	static float calculateAccAcceleration(float prevAcc[3], float currentAcc[3])
 	{
 		float ax = currentAcc[0] - prevAcc[0];
@@ -230,6 +271,28 @@ private:
 	static float _radToOrientation(float rad)
 	{
 		return rad / (2.0f * 3.14159265f);
+	}
+
+	float _getRollRadians() const
+	{
+		const float sinr_cosp = 2.0f * (m_q[3] * m_q[0] + m_q[1] * m_q[2]);
+		const float cosr_cosp = 1.0f - 2.0f * (m_q[0] * m_q[0] + m_q[1] * m_q[1]);
+		return atan2f(sinr_cosp, cosr_cosp);
+	}
+
+	float _getPitchRadians() const
+	{
+		const float sinp = 2.0f * (m_q[3] * m_q[1] - m_q[2] * m_q[0]);
+		if (fabsf(sinp) >= 1.0f)
+			return copysignf(3.14159265359f / 2.0f, sinp);
+		return asinf(sinp);
+	}
+
+	float _getYawRadians() const
+	{
+		const float siny_cosp = 2.0f * (m_q[3] * m_q[2] + m_q[0] * m_q[1]);
+		const float cosy_cosp = 1.0f - 2.0f * (m_q[1] * m_q[1] + m_q[2] * m_q[2]);
+		return atan2f(siny_cosp, cosy_cosp);
 	}
 
 	static float getAtanPitch(float X, float Y, float Z)

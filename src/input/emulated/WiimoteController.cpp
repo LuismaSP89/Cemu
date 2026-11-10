@@ -14,9 +14,37 @@ void WiimoteController::set_device_type(WPADDeviceType device_type)
 	m_data_format = get_default_data_format();
 }
 
+WPADDeviceType WiimoteController::get_device_type() const
+{
+	std::shared_lock lock(m_mutex);
+	for (const auto& controller : m_controllers)
+	{
+		const auto wiimote = std::dynamic_pointer_cast<NativeWiimoteController>(controller);
+		if (!wiimote)
+			continue;
+		if (!wiimote->is_connected())
+			return kWAPDevNotFound;
+
+		const bool motion_plus = wiimote->is_mpls_attached();
+		switch (wiimote->get_extension())
+		{
+		case NativeWiimoteController::Nunchuck:
+			return motion_plus ? kWAPDevMPLSFreeStyle : kWAPDevFreestyle;
+		case NativeWiimoteController::Classic:
+			return motion_plus ? kWAPDevMPLSClassic : kWAPDevClassic;
+		case NativeWiimoteController::None:
+		default:
+			return motion_plus ? kWAPDevMPLS : kWAPDevCore;
+		}
+	}
+
+	return m_device_type;
+}
+
 bool WiimoteController::is_mpls_attached()
 {
-	return m_device_type == kWAPDevMPLS || m_device_type == kWAPDevMPLSClassic || m_device_type == kWAPDevMPLSFreeStyle;
+	const auto device_type = get_device_type();
+	return device_type == kWAPDevMPLS || device_type == kWAPDevMPLSClassic || device_type == kWAPDevMPLSFreeStyle;
 }
 
 uint32 WiimoteController::get_emulated_button_flag(uint32 id) const
@@ -74,6 +102,21 @@ bool WiimoteController::set_default_mapping(const std::shared_ptr<ControllerBase
 
 glm::vec2 WiimoteController::get_axis() const
 {
+	std::shared_lock lock(m_mutex);
+	for (const auto& controller : m_controllers)
+	{
+		const auto wiimote = std::dynamic_pointer_cast<NativeWiimoteController>(controller);
+		if (!wiimote)
+			continue;
+
+		if (wiimote->get_extension() == NativeWiimoteController::Nunchuck)
+		{
+			const auto axis = wiimote->get_nunchuck_axis();
+			return length(axis) > 1.0f ? normalize(axis) : axis;
+		}
+	}
+	lock.unlock();
+
 	const auto left = get_axis_value(kButtonId_Nunchuck_Left);
 	const auto right = get_axis_value(kButtonId_Nunchuck_Right);
 

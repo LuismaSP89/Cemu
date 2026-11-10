@@ -12,6 +12,7 @@
 #include "input/emulated/WiimoteController.h"
 #include "wxgui/helpers/wxHelpers.h"
 #include "wxgui/components/wxInputDraw.h"
+#include "input/api/Wiimote/NativeWiimoteController.h"
 
 constexpr WiimoteController::ButtonId g_kFirstColumnItems[] =
 {
@@ -91,6 +92,7 @@ WiimoteInputPanel::WiimoteInputPanel(wxWindow* parent)
 	row = 8;
 	// Volume
 	text = new wxStaticText(this, wxID_ANY, _("Volume"));
+	m_volume_label = text;
 	text->Disable();
 	m_item_sizer->Add(text, wxGBPosition(row, column), wxDefaultSpan, wxALL, 5);
 
@@ -99,6 +101,7 @@ WiimoteInputPanel::WiimoteInputPanel(wxWindow* parent)
 	m_item_sizer->Add(m_volume, wxGBPosition(row, column + 1), wxDefaultSpan, wxTOP | wxBOTTOM | wxEXPAND, 5);
 
 	const auto volume_text = new wxStaticText(this, wxID_ANY, wxString::Format("%d%%", 0));
+	m_volume_text = volume_text;
 	volume_text->Disable();
 	m_item_sizer->Add(volume_text, wxGBPosition(row, column + 2), wxDefaultSpan, wxALL, 5);
 	m_volume->Bind(wxEVT_SLIDER, &WiimoteInputPanel::on_volume_change, this, wxID_ANY, wxID_ANY, new wxControlObject(volume_text));
@@ -211,6 +214,23 @@ void WiimoteInputPanel::set_active_device_type(WPADDeviceType type)
 
 void WiimoteInputPanel::on_volume_change(wxCommandEvent& event)
 {
+	if (const auto native = m_speaker_controller.lock())
+	{
+		native->set_speaker_volume(WiimoteSpeaker::VolumeFromPercent(m_volume->GetValue()));
+		m_volume_text->SetLabelText(wxString::Format("%d%%", m_volume->GetValue()));
+	}
+}
+
+void WiimoteInputPanel::update_speaker_controls(const ControllerPtr& controller)
+{
+	const auto native = std::dynamic_pointer_cast<NativeWiimoteController>(controller);
+	m_speaker_controller = native;
+	m_volume->Enable(native != nullptr);
+	m_volume_label->Enable(native != nullptr);
+	m_volume_text->Enable(native != nullptr);
+	const auto percent = native ? WiimoteSpeaker::VolumePercent(native->get_speaker_volume()) : 0;
+	if (m_volume->GetValue() != percent) m_volume->SetValue(percent);
+	m_volume_text->SetLabelText(wxString::Format("%d%%", percent));
 }
 
 void WiimoteInputPanel::on_extension_change(wxCommandEvent& event)
@@ -231,6 +251,7 @@ void WiimoteInputPanel::on_extension_change(wxCommandEvent& event)
 
 void WiimoteInputPanel::on_timer(const EmulatedControllerPtr& emulated_controller, const ControllerPtr& controller)
 {
+	update_speaker_controls(controller);
 	if (emulated_controller)
 	{
 		const auto wiimote = std::dynamic_pointer_cast<WiimoteController>(emulated_controller);
@@ -251,6 +272,8 @@ void WiimoteInputPanel::on_timer(const EmulatedControllerPtr& emulated_controlle
 void WiimoteInputPanel::load_controller(const EmulatedControllerPtr& emulated_controller)
 {
 	InputPanel::load_controller(emulated_controller);
+	const auto sources = emulated_controller ? emulated_controller->controllers_snapshot() : std::vector<ControllerPtr>{};
+	update_speaker_controls(sources.empty() ? ControllerPtr{} : sources.front());
 
 	if (emulated_controller) {
 		const auto wiimote = std::dynamic_pointer_cast<WiimoteController>(emulated_controller);

@@ -405,6 +405,7 @@ struct CemuConfig
 	ConfigValue<bool> advanced_ppc_logging{ false };
 
 	ConfigValue<bool> permanent_storage{ true };
+	ConfigValue<bool> automaticControllerSetup{ false };
 
 	ConfigValue<std::string> mlc_path{};
 	ConfigValue<std::string> proxy_server{};
@@ -418,6 +419,8 @@ struct CemuConfig
 	ConfigValue<bool> disable_screensaver{DISABLE_SCREENSAVER_DEFAULT};
 #undef DISABLE_SCREENSAVER_DEFAULT
 	ConfigValue<bool> play_boot_sound{false};
+	ConfigValue<bool> wiimote_usb_bluetooth{false};
+	ConfigValue<std::string> wiimote_usb_adapter{"0b05:1d70"};
 
 	std::vector<std::string> game_paths;
 	std::mutex game_cache_entries_mutex;
@@ -534,6 +537,7 @@ struct CemuConfig
 		ConfigValue<bool> emulate_skylander_portal{false};
 		ConfigValue<bool> emulate_infinity_base{false};
 		ConfigValue<bool> emulate_dimensions_toypad{false};
+
 	}emulated_usb_devices{};
 
 	static int AudioChannelsToNChannels(AudioChannels kStereo)

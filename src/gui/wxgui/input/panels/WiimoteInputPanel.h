@@ -7,6 +7,8 @@
 class wxCheckBox;
 class wxGridBagSizer;
 class wxInputDraw;
+class wxStaticText;
+class NativeWiimoteController;
 
 class WiimoteInputPanel : public InputPanel
 {
@@ -33,6 +35,10 @@ private:
 	wxCheckBox* m_motion_plus;
 
 	wxSlider* m_volume;
+	wxStaticText* m_volume_label;
+	wxStaticText* m_volume_text;
+	std::weak_ptr<NativeWiimoteController> m_speaker_controller;
+	void update_speaker_controls(const ControllerPtr& controller);
 
 	std::vector<wxWindow*> m_nunchuck_items;
 

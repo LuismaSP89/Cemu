@@ -7,6 +7,8 @@
 #include "input/api/InputAPI.h"
 
 #include <boost/signals2/connection.hpp>
+#include <atomic>
+#include <memory>
 
 struct ControllerPage;
 class ControllerBase;
@@ -35,6 +37,7 @@ private:
 	void update_state();
 
 	boost::signals2::connection m_controller_changed;
+	std::shared_ptr<std::atomic_bool> m_controller_dirty = std::make_shared<std::atomic_bool>(false);
 	void on_controller_changed();
 
 	// events

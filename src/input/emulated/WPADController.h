@@ -4,6 +4,7 @@
 #include "Cafe/OS/libs/padscore/padscore.h"
 #include "Cafe/OS/libs/vpad/vpad.h"
 
+
 constexpr uint32 kWPADButtonRepeat = 0x80000000;
 
 enum WPADDeviceType
@@ -115,12 +116,16 @@ public:
 	virtual WPADDeviceType get_device_type() const = 0;
 
 	WPADDataFormat get_data_format() const { return m_data_format; }
-	void set_data_format(WPADDataFormat data_format) { m_data_format = data_format; }
+	void set_data_format(WPADDataFormat data_format);
+	void sync_data_format();
 
 	void WPADRead(WPADStatus_t* status);
 
 	void KPADRead(KPADStatus_t& status, const BtnRepeat& repeat);
 	virtual bool is_mpls_attached() { return false; }
+	bool is_guest_connected() const;
+	bool is_mpls_ready() const;
+	bool is_mpls_calibrated() const;
 
 	enum class ConnectCallbackStatus
 	{
@@ -137,7 +142,10 @@ protected:
 	WPADDataFormat m_data_format;
 
 private:
+
 	uint32be m_last_holdvalue = 0;
+	bool m_data_format_user_set = false;
+	WPADDeviceType m_last_data_format_device_type = kWAPDevUnknown;
 
 	std::chrono::steady_clock::time_point m_last_hold_change{}, m_last_pulse{};
 

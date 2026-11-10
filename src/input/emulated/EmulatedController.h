@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <pugixml.hpp>
 
 class ControllerBase;
@@ -70,9 +71,15 @@ public:
 	PositionVisibility GetPositionVisibility() const;
 
 	void add_controller(std::shared_ptr<ControllerBase> controller);
+	void set_player_led_index(size_t index);
 	void remove_controller(const std::shared_ptr<ControllerBase>& controller);
 	void clear_controllers();
 	const std::vector<std::shared_ptr<ControllerBase>>& get_controllers() const { return m_controllers; }
+	std::vector<std::shared_ptr<ControllerBase>> controllers_snapshot() const
+	{
+		std::shared_lock lock(m_mutex);
+		return m_controllers;
+	}
 
 	bool is_mapping_down(uint64 mapping) const;
 	std::string get_mapping_name(uint64 mapping) const;
@@ -104,6 +111,7 @@ public:
 
 protected:
 	size_t m_player_index;
+	std::atomic<size_t> m_player_led_index{0};
 	std::string m_profile_name = "default";
 
 	mutable std::shared_mutex m_mutex;

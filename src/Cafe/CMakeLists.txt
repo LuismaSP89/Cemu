@@ -440,8 +440,13 @@ add_library(CemuCafe
   OS/libs/nsysnet/nsysnet.h
   OS/libs/ntag/ntag.cpp
   OS/libs/ntag/ntag.h
+  OS/libs/padscore/MplsProcessing.h
   OS/libs/padscore/padscore.cpp
   OS/libs/padscore/padscore.h
+  OS/libs/padscore/WpadLifecycle.h
+  OS/libs/padscore/WpadSpeakerControl.h
+  OS/libs/padscore/YamahaAdpcm.h
+
   OS/libs/proc_ui/proc_ui.cpp
   OS/libs/proc_ui/proc_ui.h
   OS/libs/snd_core/ax_aux.cpp

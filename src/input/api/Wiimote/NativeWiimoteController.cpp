@@ -1,6 +1,7 @@
 #include "input/api/Wiimote/NativeWiimoteController.h"
 
 #include "input/api/Wiimote/WiimoteControllerProvider.h"
+#include "input/api/Wiimote/WiimoteBattery.h"
 
 #include <pugixml.hpp>
 
@@ -13,6 +14,8 @@ NativeWiimoteController::NativeWiimoteController(size_t index)
 void NativeWiimoteController::save(pugi::xml_node& node)
 {
 	base_type::save(node);
+	node.append_child("speaker_volume").text().set(get_speaker_volume());
+	node.append_child("dolphinbar_speaker_compatibility").text().set(get_speaker_compatibility());
 
 	node.append_child("packet_delay").append_child(pugi::node_pcdata).set_value(
 		fmt::format("{}", m_packet_delay).c_str());
@@ -21,6 +24,8 @@ void NativeWiimoteController::save(pugi::xml_node& node)
 void NativeWiimoteController::load(const pugi::xml_node& node)
 {
 	base_type::load(node);
+	if (const auto volume = node.child("speaker_volume")) set_speaker_volume(static_cast<uint8>(std::clamp(volume.text().as_int(64), 0, 127)));
+	set_speaker_compatibility(node.child("dolphinbar_speaker_compatibility").text().as_bool(false));
 
 	if (const auto value = node.child("packet_delay"))
 		m_packet_delay = ConvertString<uint32>(value.child_value());
@@ -29,7 +34,10 @@ void NativeWiimoteController::load(const pugi::xml_node& node)
 bool NativeWiimoteController::connect()
 {
 	if (is_connected())
+	{
+		m_provider->set_packet_delay(m_index,m_packet_delay);
 		return true;
+	}
 
 	if (!m_provider->is_registered_device(m_index))
 	{
@@ -48,17 +56,12 @@ bool NativeWiimoteController::connect()
 
 bool NativeWiimoteController::is_connected()
 {
-	if (m_provider->is_connected(m_index))
-	{
-		m_provider->set_packet_delay(m_index, m_packet_delay);
-		return true;
-	}
-
-	return false;
+	return m_provider->is_connected(m_index);
 }
 
 void NativeWiimoteController::set_player_index(size_t player_index)
 {
+	if (m_player_index == player_index) return;
 	m_player_index = player_index;
 	m_provider->set_led(m_index, m_player_index);
 }
@@ -66,7 +69,8 @@ void NativeWiimoteController::set_player_index(size_t player_index)
 NativeWiimoteController::Extension NativeWiimoteController::get_extension() const
 {
 	Extension result = None;
-	const auto ext = m_provider->get_state(m_index).m_extension;
+	const auto snapshot = m_provider->get_state_snapshot(m_index);
+	const auto& ext = snapshot->m_extension;
 	if (std::holds_alternative<NunchuckData>(ext))
 		result = Nunchuck;
 	else if (std::holds_alternative<ClassicData>(ext))
@@ -77,37 +81,49 @@ NativeWiimoteController::Extension NativeWiimoteController::get_extension() cons
 
 bool NativeWiimoteController::is_mpls_attached() const
 {
-	return m_provider->get_state(m_index).m_motion_plus.has_value();
+	return m_provider->get_state_snapshot(m_index)->m_motion_plus.has_value();
 }
 
 bool NativeWiimoteController::has_position()
 {
-	const auto state = m_provider->get_state(m_index);
-	return std::any_of(state.ir_camera.dots.cbegin(), state.ir_camera.dots.cend(),
-	                   [](const IRDot& v) { return v.visible; });
+	const auto snapshot = m_provider->get_state_snapshot(m_index);
+	const auto& state = *snapshot;
+	return state.ir_camera.m_positionVisibility != PositionVisibility::NONE;
 }
 
 glm::vec2 NativeWiimoteController::get_position()
 {
-	const auto state = m_provider->get_state(m_index);
+	const auto snapshot = m_provider->get_state_snapshot(m_index);
+	const auto& state = *snapshot;
 	return state.ir_camera.position;
 }
 
 glm::vec2 NativeWiimoteController::get_prev_position()
 {
-	const auto state = m_provider->get_state(m_index);
+	const auto snapshot = m_provider->get_state_snapshot(m_index);
+	const auto& state = *snapshot;
 	return state.ir_camera.m_prev_position;
 }
 PositionVisibility NativeWiimoteController::GetPositionVisibility()
 {
-	const auto state = m_provider->get_state(m_index);
+	const auto snapshot = m_provider->get_state_snapshot(m_index);
+	const auto& state = *snapshot;
 	return state.ir_camera.m_positionVisibility;
 }
 
 bool NativeWiimoteController::has_low_battery()
 {
-	const auto state = m_provider->get_state(m_index);
+	const auto snapshot = m_provider->get_state_snapshot(m_index);
+	const auto& state = *snapshot;
 	return HAS_FLAG(state.flags, kBatteryEmpty);
+}
+
+std::optional<uint8> NativeWiimoteController::battery_percent() const
+{
+	if (!m_provider->is_connected(m_index)) return std::nullopt;
+	const auto snapshot = m_provider->get_state_snapshot(m_index);
+	const auto& state = *snapshot;
+	return state.battery_known ? std::optional<uint8>{WiimoteBattery::Percent(state.battery_level)} : std::nullopt;
 }
 
 void NativeWiimoteController::start_rumble()
@@ -127,19 +143,59 @@ void NativeWiimoteController::stop_rumble()
 
 MotionSample NativeWiimoteController::get_motion_sample()
 {
-	const auto state = m_provider->get_state(m_index);
+	const auto snapshot = m_provider->get_state_snapshot(m_index);
+	const auto& state = *snapshot;
 	return state.motion_sample;
+}
+
+WiimoteKpadMotion::Sample NativeWiimoteController::get_kpad_motion() const
+{
+	const auto snapshot = m_provider->get_state_snapshot(m_index);
+	const auto& state = *snapshot;
+	auto sample = state.kpad_motion.GetSample();
+	const auto scale = state.m_calib_acceleration.gravity - state.m_calib_acceleration.zero;
+	if (scale.x && scale.y && scale.z)
+	{
+		sample.acceleration = {-state.m_acceleration.x / float(scale.x),
+			-state.m_acceleration.z / float(scale.z), state.m_acceleration.y / float(scale.y)};
+		const auto& ir = state.ir_camera;
+		const auto& a = ir.dots[ir.indices.first];
+		const auto& b = ir.dots[ir.indices.second];
+		sample.ir = WiimoteIrReference::Read({a.raw.x, a.raw.y, a.visible},
+			{b.raw.x, b.raw.y, b.visible}, sample.acceleration);
+	}
+	return sample;
 }
 
 MotionSample NativeWiimoteController::get_nunchuck_motion_sample() const
 {
-	const auto state = m_provider->get_state(m_index);
+	const auto snapshot = m_provider->get_state_snapshot(m_index);
+	const auto& state = *snapshot;
 	if (std::holds_alternative<NunchuckData>(state.m_extension))
 	{
 		return std::get<NunchuckData>(state.m_extension).motion_sample;
 	}
 
 	return {};
+}
+
+glm::vec2 NativeWiimoteController::get_nunchuck_axis() const
+{
+	const auto snapshot = m_provider->get_state_snapshot(m_index);
+	const auto& state = *snapshot;
+	if (std::holds_alternative<NunchuckData>(state.m_extension))
+	{
+		return std::get<NunchuckData>(state.m_extension).axis;
+	}
+
+	return {};
+}
+
+std::optional<MotionPlusData> NativeWiimoteController::get_motion_plus_data() const
+{
+	const auto snapshot = m_provider->get_state_snapshot(m_index);
+	const auto& state = *snapshot;
+	return state.m_motion_plus_active ? state.m_motion_plus : std::nullopt;
 }
 
 std::string NativeWiimoteController::get_button_name(uint64 button) const
@@ -209,14 +265,16 @@ ControllerState NativeWiimoteController::raw_state()
 	ControllerState result{};
 	if (!is_connected())
 		return result;
+	m_provider->set_packet_delay(m_index,m_packet_delay);
 
-	const auto state = m_provider->get_state(m_index);
+	const auto snapshot = m_provider->get_state_snapshot(m_index);
+	const auto& state = *snapshot;
 	for (int i = 0; i < std::numeric_limits<uint16>::digits; i++)
 		result.buttons.SetButtonState(i, (state.buttons & (1 << i)) != 0);
 
 	if (std::holds_alternative<NunchuckData>(state.m_extension))
 	{
-		const auto nunchuck = std::get<NunchuckData>(state.m_extension);
+		const auto& nunchuck = std::get<NunchuckData>(state.m_extension);
 		if (nunchuck.c)
 			result.buttons.SetButtonState(kWiimoteButton_C, true);
 
@@ -227,7 +285,7 @@ ControllerState NativeWiimoteController::raw_state()
 	}
 	else if (std::holds_alternative<ClassicData>(state.m_extension))
 	{
-		const auto classic = std::get<ClassicData>(state.m_extension);
+		const auto& classic = std::get<ClassicData>(state.m_extension);
 		uint64 buttons = (uint64)classic.buttons << kHighestWiimote;
 		for (int i = 0; i < std::numeric_limits<uint64>::digits; i++)
 		{
