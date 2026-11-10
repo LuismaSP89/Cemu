@@ -35,7 +35,7 @@ class WiimoteControllerProvider : public ControllerProviderBase
 public:
 	constexpr static uint32 kDefaultPacketDelay = 25;
 
-	WiimoteControllerProvider() = default;
+	WiimoteControllerProvider();
 	~WiimoteControllerProvider();
 
 	inline static InputAPI::Type kAPIType = InputAPI::Wiimote;
