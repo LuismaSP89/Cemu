@@ -30,6 +30,9 @@ de Windows (hidapi), pero el passthrough evita los problemas del stack Bluetooth
    - Marcar "USB Bluetooth passthrough for Wii Remotes".
 5. Pulsar SYNC (botón rojo bajo la tapa de las pilas) en cada Wii Remote nuevo. Los ya
    emparejados se reconectan pulsando A. Las posiciones de controlador se asignan solas.
+6. Si un juego pide "pulsa HOME para añadir un Wii Remote" (Mario Party 10, por ejemplo), pulsar HOME
+   en el propio Wii Remote: Cemu no emula el menú HOME, así que esa pulsación se traduce en un
+   evento de desconexión y reconexión del mando, que es lo que el juego espera para añadirlo.
 
 Para el altavoz con DolphinBar/HID o adaptador USB, activar "Speaker compatibility (3 kHz)" en
 los ajustes del Wiimote antes de arrancar el juego (reduce la calidad del audio del mando).

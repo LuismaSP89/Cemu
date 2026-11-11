@@ -191,6 +191,9 @@ namespace padscore
 			bool attached_query_pending = false;
 
 			BtnRepeat btn_repeat{};
+			// set when HOME was pressed on the remote: the next tick re-reports the connection without
+			// dropping the extension callback, mimicking a re-pair through the HOME menu
+			bool home_reconnect = false;
 		} controller_data[InputManager::kMaxWPADControllers] = {};
 
 		int max_controllers = kWPADMaxControllers; // max bt controllers?
@@ -1125,11 +1128,25 @@ namespace padscore
 			const auto controller = GetConnectedController(i);
 			const bool live = controller != nullptr;
 			const bool was_known = channel.connection.known;
+			// Pressing HOME on a Wii Remote stands in for the HOME menu's controller pairing (which Cemu does
+			// not emulate): report a disconnect now and the connection again on the next tick, so games that
+			// wait for a fresh connect event to add a player (e.g. Mario Party 10) pick the remote up.
+			if (live && was_known && channel.connection.connected && controller->was_home_button_down())
+			{
+				channel.connection.connected = false;
+				channel.connection.extension = kWAPDevNotFound;
+				channel.home_reconnect = true;
+				if (channel.connectCallback)
+					PPCCoreCallback(channel.connectCallback, i, WPAD_ERR_NO_CONTROLLER);
+				cemuLog_log(LogType::InputAPI, "WPAD channel {} HOME pressed: re-reporting connection", i);
+				continue;
+			}
 			if (channel.connection.Update(live))
 			{
 				// SDK clears extension callbacks on link changes. Games normally
 				// register them again from their connection callback.
-				if (was_known) channel.extension_callback = nullptr;
+				if (was_known && !channel.home_reconnect) channel.extension_callback = nullptr;
+				channel.home_reconnect = false;
 				if (!live && channel.mpls_config_inflight)
 				{
 					channel.mpls_config_inflight = false;
