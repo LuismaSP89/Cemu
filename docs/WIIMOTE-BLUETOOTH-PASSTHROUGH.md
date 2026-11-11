@@ -1,63 +1,64 @@
-# Wii Remote por Bluetooth passthrough (adaptador USB dedicado)
+# Wii Remotes over Bluetooth passthrough (dedicated USB adapter)
 
-Código portado de [GamesExObscura/CemuX](https://github.com/GamesExObscura/CemuX) (MPL-2.0).
-Solo Windows x64.
+Based on the Wii Remote work in [GamesExObscura/CemuX](https://github.com/GamesExObscura/CemuX) (MPL-2.0).
+Windows x64 only for the USB passthrough part.
 
-## Qué aporta
+## What it adds
 
-- Wii Remote, MotionPlus y Nunchuk/Classic con hotplug: al encender o apagar un mando el juego
-  recibe la conexión/desconexión real (callbacks WPAD), el tipo de extensión y el nivel de batería.
-- Asignación automática: un mando nuevo ocupa la primera posición libre (controlador 2..8) sin
-  pisar los perfiles existentes. Opcional: "Automatically configure connected controllers" en
-  Input Settings alterna Pro/Wiimote según lo que haya conectado.
-- Altavoz del mando (WPADControlSpeaker / WPADSendStreamData) y volumen configurable.
-- Passthrough Bluetooth: Cemu habla HCI directamente con un adaptador USB dedicado (WinUSB vía
-  libusb), igual que haría la consola. Emparejamiento con el botón rojo SYNC, reconexión con A,
-  enlaces guardados entre sesiones, apagado del mando gestionado.
+- Real Wii Remote, MotionPlus and Nunchuk/Classic Controller with hotplug: turning a remote on or off
+  reaches the game as a real connect/disconnect (WPAD callbacks), together with the extension type and
+  the battery level.
+- Automatic placement: a new remote takes the first free controller slot (2..8) without touching
+  existing profiles. Optionally, "Automatically configure connected controllers" in Input settings
+  switches slots between Pro Controller and Wii Remote depending on what is connected.
+- Wii Remote speaker (WPADControlSpeaker / WPADSendStreamData) with a configurable volume.
+- Bluetooth passthrough: Cemu talks HCI directly to a dedicated USB adapter (WinUSB through libusb),
+  the way the console does. Pairing with the red SYNC button, reconnection with A, bonds kept across
+  sessions (encrypted with the Windows user's DPAPI), remote power-off handled.
 
-Sin passthrough todo lo anterior funciona también con un Wii Remote emparejado al Bluetooth
-de Windows (hidapi), pero el passthrough evita los problemas del stack Bluetooth de Windows.
+Without passthrough everything above also works with a Wii Remote paired to the Windows Bluetooth
+stack (hidapi), but the passthrough avoids the usual problems of that stack.
 
-## Configuración del adaptador
+## Adapter setup
 
-1. Conectar un adaptador USB Bluetooth **clásico** (BR/EDR) que vaya a quedar dedicado a Cemu.
-   CemuX solo tiene probado el ASUS USB-BT600 (VID:PID 0b05:1d70, el valor por defecto).
-2. Mirar su VID:PID en el Administrador de dispositivos (Propiedades > Detalles > Id. de hardware).
-3. Con [Zadig](https://zadig.akeo.ie/) instalar el driver **WinUSB** solo para ese adaptador
-   (no para el Bluetooth que uses normalmente).
-4. En Cemu: Options > Input settings:
-   - "Adapter USB ID..." → escribir el VID:PID (formato `0b05:1d70`).
-   - Marcar "USB Bluetooth passthrough for Wii Remotes".
-5. Pulsar SYNC (botón rojo bajo la tapa de las pilas) en cada Wii Remote nuevo. Los ya
-   emparejados se reconectan pulsando A. Las posiciones de controlador se asignan solas.
-   Si un mando no aparece (típico de clones no oficiales, que responden mal a las búsquedas
-   cortas), pulsar el botón "Pair Wii Remote (SYNC)" de Input settings y, mientras dura la
-   búsqueda de 30 s, SYNC en el mando. Si un mando emparejado rechaza su clave guardada al
-   pulsar A, Cemu la conserva (los clones fallan a veces de forma pasajera y el siguiente A
-   entra); solo la olvida cuando ese mando vuelve a aparecer en una búsqueda SYNC, y entonces
-   se empareja desde cero.
-7. Los mandos USB emparejados conservan su número ("Controller 1", "Controller 2"...) en el orden
-   en que se emparejaron, aunque se reconecten en otro orden. Cada Wii Remote debe estar en un solo
-   puerto de Cemu; un mismo "Controller N" en dos puertos hace que el juego lo vea dos veces y que
-   sus LEDs muestren el último canal asignado.
-6. Si un juego pide "pulsa HOME para añadir un Wii Remote" (Mario Party 10, por ejemplo), pulsar HOME
-   en el propio Wii Remote: Cemu no emula el menú HOME, así que esa pulsación se traduce en un
-   evento de desconexión y reconexión del mando, que es lo que el juego espera para añadirlo.
+1. Plug in a classic (BR/EDR) USB Bluetooth adapter that will be dedicated to Cemu. Known to work:
+   the ASUS USB-BT600 (VID:PID `0b05:1d70`, the default) and the Wii / Wii U internal Bluetooth module
+   wired to USB (`057e:0305`), the same hardware Dolphin's Bluetooth passthrough uses.
+2. Find its VID:PID in Device Manager (Properties > Details > Hardware Ids).
+3. With [Zadig](https://zadig.akeo.ie/) install the WinUSB driver for that adapter only (not for the
+   Bluetooth adapter you use for everything else).
+4. In Cemu, Options > Input settings:
+   - "Adapter USB ID..." and type the VID:PID (`0b05:1d70` format).
+   - Tick "USB Bluetooth passthrough for Wii Remotes". The status line below should say "Adapter ready".
+5. Press SYNC (the red button under the battery cover) on each new Wii Remote. Already paired remotes
+   reconnect with A. Controller slots are assigned automatically.
+   If a remote does not show up (typical of third-party remotes, which answer short scans badly), press
+   "Pair Wii Remote (SYNC)" in Input settings and, while the 30 s search runs, SYNC on the remote.
+   Some third-party remotes never answer a search and instead call the adapter themselves when a
+   button is pressed; those pair by just pressing A (or 1+2), ideally while no search is running.
+   If a paired remote rejects its saved key when you press A, Cemu keeps the key (third-party remotes
+   sometimes fail transiently and the next A works); it only forgets it once that remote shows up again
+   in a SYNC search, and then pairs it from scratch.
+6. Paired USB remotes keep their number ("Controller 1", "Controller 2"...) in the order they were first
+   paired, even if they reconnect in a different order. Keep each Wii Remote in a single Cemu slot: the
+   same "Controller N" in two slots makes the game see it twice and its LEDs show the last channel.
+7. When a game says "press HOME to add a Wii Remote" (Mario Party 10, for example), press HOME on that
+   Wii Remote: Cemu does not emulate the HOME menu, so the press is turned into a disconnect/reconnect
+   event, which is what the game waits for.
 
-Para el altavoz con DolphinBar/HID o adaptador USB, activar "Speaker compatibility (3 kHz)" en
-los ajustes del Wiimote antes de arrancar el juego (reduce la calidad del audio del mando).
+For the speaker through a DolphinBar/HID or the USB adapter, enable "Speaker compatibility (3 kHz)" in
+the Wii Remote settings before starting the game (lower audio quality on the remote).
 
-## Dónde está el código
+Setting `CEMU_USB_BLUETOOTH_TRACE` to an absolute file path writes a session trace of the USB host
+(HCI commands/events, inquiry classes, rejected device names; never addresses, keys or HID payloads).
 
-- `src/input/api/Wiimote/` — proveedor reescrito (hotplug, MotionPlus, altavoz, batería) y
-  `usb/` (host HCI/L2CAP sobre libusb, enlaces guardados cifrados con DPAPI).
-- `src/Cafe/OS/libs/padscore/` — implementación de WPAD/KPAD: callbacks de conexión y extensión,
-  MotionPlus (KPADEnableMpls y compañía, `MplsProcessing.h`), altavoz, sync, batería.
-- `src/input/InputManager.*` — asignación automática de Wii Remotes y modo opcional Pro/Wiimote.
-- `src/gui/wxgui/input/` — casillas de passthrough, ID del adaptador, volumen y compatibilidad.
-- `src/config/CemuConfig.*` — claves `wiimote_usb_bluetooth`, `wiimote_usb_adapter`,
-  `automatic_controller_setup`.
+## Where the code is
 
-Diferencias respecto a CemuX: no se han traído ni la guitarra virtual, ni los procesos auxiliares
-del menú HOME, ni las pruebas automáticas; los hilos del proveedor Wiimote solo arrancan si un
-perfil usa la API Wiimote o si el passthrough está activado (comportamiento de upstream).
+- `src/input/api/Wiimote/` — rewritten provider (hotplug, MotionPlus, speaker, battery) and `usb/`
+  (HCI/L2CAP host over libusb, bonds encrypted with DPAPI).
+- `src/Cafe/OS/libs/padscore/` — WPAD/KPAD implementation: connect and extension callbacks, MotionPlus
+  (KPADEnableMpls and friends, `MplsProcessing.h`), speaker, sync, battery.
+- `src/input/InputManager.*` — automatic Wii Remote placement and the optional Pro/Wiimote mode.
+- `src/gui/wxgui/input/` — passthrough checkbox, adapter ID, pairing button and status line, volume and
+  speaker compatibility.
+- `src/config/CemuConfig.*` — `wiimote_usb_bluetooth`, `wiimote_usb_adapter`, `automatic_controller_setup`.
