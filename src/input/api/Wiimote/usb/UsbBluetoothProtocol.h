@@ -23,6 +23,14 @@ inline Address ReadAddress(std::span<const std::uint8_t> b, size_t p) {
 inline bool IsWiiName(std::string_view name) {
     return name == "Nintendo RVL-CNT-01" || name == "Nintendo RVL-CNT-01-TR";
 }
+// Third-party remotes sometimes report a variant of the official name (extra suffix, missing
+// vendor prefix). Map anything that still identifies as an RVL-CNT-01 remote to the official
+// name, so bonds and the rest of the session only ever see the two canonical strings.
+inline std::string CanonicalWiiName(std::string_view name) {
+    if (IsWiiName(name)) return std::string(name);
+    if (name.find("RVL-CNT-01") == std::string_view::npos || name.find("RVL-CNT-01-UC") != std::string_view::npos) return {};
+    return name.find("-TR") != std::string_view::npos ? "Nintendo RVL-CNT-01-TR" : "Nintendo RVL-CNT-01";
+}
 inline bool IsDedicatedAdapter(std::uint16_t vid, std::uint16_t pid) {
     return vid == 0x0b05 && pid == 0x1d70;
 }
@@ -63,7 +71,7 @@ public:
         m_rejectedNames.clear();
         m_audioQueued=m_audioRejected=0;m_lastAclDueUs=0;
         m_inquiryResults=m_nameAccepted=m_nameRejected=m_capacityRejected=0;
-        m_lastSeenClass=m_lastNamedClass=m_lastNameModel=0;
+        m_lastSeenClass=m_lastNamedClass=m_lastNameModel=0; m_rejectedNameList.clear();
         m_aclLimit = 0; m_aclMtu = 0; m_inflight = 0;
         Command(0x0c03, {}); m_status = "Initializing dedicated USB Bluetooth";
     }
@@ -141,7 +149,7 @@ public:
         return "USB discovery: results="+std::to_string(m_inquiryResults)+" last_seen_class="+std::to_string(m_lastSeenClass)+
             " names_accepted="+std::to_string(m_nameAccepted)+" names_rejected="+std::to_string(m_nameRejected)+
             " last_named_class="+std::to_string(m_lastNamedClass)+" last_name_model="+std::to_string(m_lastNameModel)+
-            " capacity_rejected="+std::to_string(m_capacityRejected);
+            " capacity_rejected="+std::to_string(m_capacityRejected)+" rejected_names=["+m_rejectedNameList+"]";
     }
     bool AudioActive() const {return Ready() && m_now<m_audioUntil;}
     std::uint64_t LastAclDueUs() const {return m_lastAclDueUs;}
@@ -321,6 +329,7 @@ private:
     unsigned m_inflight{}, m_malformed{}, m_bondRevision{}, m_audioQueued{}, m_audioRejected{};
     unsigned m_inquiryResults{},m_nameAccepted{},m_nameRejected{},m_capacityRejected{};
     unsigned m_lastSeenClass{},m_lastNamedClass{},m_lastNameModel{};
+    std::string m_rejectedNameList;
     bool m_ready = false, m_inquiry = false, m_inquiryCancel=false, m_closing=false;
     Address m_local{};
     std::string m_status = "Disabled", m_error;
@@ -421,11 +430,19 @@ private:
         // A reconnect may win while discovery is still resolving its name.
         if(r->incoming || r->handle!=0xffff)return;
         const auto end = std::find(p.begin() + 7, p.end(), 0);
-        const std::string name(p.begin() + 7, end);
+        const std::string reported(p.begin() + 7, end);
+        const std::string name = p[0] ? std::string{} : CanonicalWiiName(reported);
         m_lastNamedClass=r->classOfDevice;
-        m_lastNameModel=p[0]?0:name=="Nintendo RVL-CNT-01"?1:name=="Nintendo RVL-CNT-01-TR"?2:name=="Nintendo RVL-CNT-01-UC"?3:4;
-        if (p[0] || !IsWiiName(name)) {
+        m_lastNameModel=p[0]?0:name=="Nintendo RVL-CNT-01"?1:name=="Nintendo RVL-CNT-01-TR"?2:reported.find("RVL-CNT-01-UC")!=std::string::npos?3:4;
+        if (p[0] || name.empty()) {
             r->connecting = false;++m_nameRejected;
+            // Keep the rejected names (device names only, never addresses) so the opt-in trace shows
+            // what was nearby. Printable ASCII only, bounded.
+            if (!p[0] && m_rejectedNameList.size() < 512) {
+                std::string shown; for (const char c : reported) shown += (c >= 0x20 && c < 0x7f && c != '|' && c != ']') ? c : '?';
+                if (m_rejectedNameList.find("|" + shown + "|") == std::string::npos && m_rejectedNameList.find(shown + "|") != 0)
+                    m_rejectedNameList += shown + "|";
+            }
             // Do not let the same nearby non-Wii device consume every scan.
             // Failed lookups are not cached, so temporary radio errors can retry.
             if(!p[0] && (m_rejectedNames.size()<16 || m_rejectedNames.contains(r->address)))m_rejectedNames[r->address]=m_now+60000;
