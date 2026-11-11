@@ -607,8 +607,7 @@ void InputSettings2::update_usb_status()
 		if (now < m_sync_until)
 		{
 			const auto left = std::chrono::duration_cast<std::chrono::seconds>(m_sync_until - now).count() + 1;
-			text = wxString::Format(_("Searching for Wii Remotes (%lld s left): press the red SYNC button on the remote now.
-%s"), static_cast<long long>(left), text);
+			text = wxString::Format(_("Searching for Wii Remotes (%lld s left): press the red SYNC button on the remote now.\n%s"), static_cast<long long>(left), text);
 		}
 	}
 	if (text == m_usb_status_text) return;
