@@ -36,6 +36,10 @@ de Windows (hidapi), pero el passthrough evita los problemas del stack Bluetooth
    pulsar A, Cemu la conserva (los clones fallan a veces de forma pasajera y el siguiente A
    entra); solo la olvida cuando ese mando vuelve a aparecer en una búsqueda SYNC, y entonces
    se empareja desde cero.
+7. Los mandos USB emparejados conservan su número ("Controller 1", "Controller 2"...) en el orden
+   en que se emparejaron, aunque se reconecten en otro orden. Cada Wii Remote debe estar en un solo
+   puerto de Cemu; un mismo "Controller N" en dos puertos hace que el juego lo vea dos veces y que
+   sus LEDs muestren el último canal asignado.
 6. Si un juego pide "pulsa HOME para añadir un Wii Remote" (Mario Party 10, por ejemplo), pulsar HOME
    en el propio Wii Remote: Cemu no emula el menú HOME, así que esa pulsación se traduce en un
    evento de desconexión y reconexión del mando, que es lo que el juego espera para añadirlo.

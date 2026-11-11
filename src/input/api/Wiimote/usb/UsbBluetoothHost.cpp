@@ -49,7 +49,8 @@ struct Shared {
 
 class UsbRemote final : public WiimoteDevice {
 public:
-    UsbRemote(std::shared_ptr<Shared> state, Address address) : m_state(state), m_address(address) {}
+    UsbRemote(std::shared_ptr<Shared> state, Address address, size_t slot) : m_state(state), m_address(address), m_slot(slot) {}
+    std::optional<size_t> preferred_slot() const override { return m_slot; }
     bool write_data(const std::vector<uint8>& b) override {
         auto state = m_state.lock(); if (!state) return false;
         std::scoped_lock lock(state->mutex);
@@ -74,6 +75,7 @@ public:
 private:
     std::weak_ptr<Shared> m_state;
     Address m_address;
+    size_t m_slot;
 };
 
 struct Connection {
@@ -409,8 +411,11 @@ std::string UsbBluetoothHost::Status() const { std::scoped_lock lock(m_impl->sta
 std::vector<WiimoteDevicePtr> UsbBluetoothHost::Devices() {
     std::vector<WiimoteDevicePtr> out;
     std::scoped_lock lock(m_impl->state->mutex);
-    if (m_impl->state->online) for (const auto& r : m_impl->state->session.Remotes()) {
-        if (r.Ready()) out.push_back(std::make_shared<UsbRemote>(m_impl->state, r.address));
+    if (m_impl->state->online) {
+        // The session keeps bonded remotes in bond-file order, so a remote's position is stable across runs.
+        const auto& remotes = m_impl->state->session.Remotes();
+        for (size_t i = 0; i < remotes.size(); ++i)
+            if (remotes[i].Ready()) out.push_back(std::make_shared<UsbRemote>(m_impl->state, remotes[i].address, i));
     }
     return out;
 }

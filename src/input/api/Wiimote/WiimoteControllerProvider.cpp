@@ -221,6 +221,18 @@ void WiimoteControllerProvider::RefreshControllers()
 		std::tie(isDuplicate, lowestReplaceableIndex) = inspect(device);
 		if (isDuplicate)
 			continue;
+		if (const auto preferred = device->preferred_slot())
+		{
+			// keep the slot the transport asked for when it is free, so profiles keep pointing at the same remote
+			while (m_wiimotes.size() <= *preferred)
+				m_wiimotes.push_back(std::make_unique<Wiimote>(nullptr));
+			if (!m_wiimotes[*preferred].device)
+			{
+				m_state_cache.Clear(*preferred);
+				m_wiimotes.replace(*preferred, std::make_unique<Wiimote>(device));
+				continue;
+			}
+		}
 		if (lowestReplaceableIndex != -1)
 		{
 			m_state_cache.Clear(lowestReplaceableIndex);

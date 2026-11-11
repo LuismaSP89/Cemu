@@ -62,6 +62,18 @@ public:
             out << " opcode=0x" << std::setw(4) << Word(b, 3) << " status=0x" << std::setw(2) << unsigned(b[5]);
         } else if (b[0] == 0x0f && b.size() == 6) {
             out << " opcode=0x" << std::setw(4) << Word(b, 4) << " status=0x" << std::setw(2) << unsigned(b[2]);
+        } else if ((b[0] == 0x02 || b[0] == 0x22) && b.size() >= 3 && b.size() == 3 + 14u * b[2]) {
+            // inquiry results: class of device per response, never the address
+            const std::size_t classOffset = b[0] == 0x02 ? 9 : 8;
+            out << " responses=" << std::dec << unsigned(b[2]) << std::hex << " classes=";
+            for (unsigned i = 0; i < b[2]; ++i) {
+                const auto p = 3 + i * 14 + classOffset;
+                out << (i ? "," : "") << "0x" << std::setw(6) << (unsigned(b[p]) | (unsigned(b[p + 1]) << 8) | (unsigned(b[p + 2]) << 16));
+            }
+        } else if (b[0] == 0x04 && b.size() == 12) {
+            out << " class=0x" << std::setw(6) << (unsigned(b[8]) | (unsigned(b[9]) << 8) | (unsigned(b[10]) << 16)) << " link_type=0x" << std::setw(2) << unsigned(b[11]);
+        } else if (b[0] == 0x07 && b.size() >= 3) {
+            out << " status=0x" << std::setw(2) << unsigned(b[2]);
         }
         Line(out.str());
     }
