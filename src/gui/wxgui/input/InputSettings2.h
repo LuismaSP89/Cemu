@@ -8,6 +8,7 @@
 
 #include <boost/signals2/connection.hpp>
 #include <atomic>
+#include <chrono>
 #include <memory>
 
 struct ControllerPage;
@@ -24,6 +25,12 @@ private:
 
 	wxNotebook* m_notebook;
 	wxTimer* m_timer;
+
+	// dedicated USB Bluetooth adapter status line and the pairing countdown shown on it
+	wxStaticText* m_usb_status = nullptr;
+	wxString m_usb_status_text;
+	std::chrono::steady_clock::time_point m_sync_until{};
+	void update_usb_status();
 
 	wxBitmap m_connected, m_disconnected, m_low_battery;
 

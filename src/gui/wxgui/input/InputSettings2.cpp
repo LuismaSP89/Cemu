@@ -110,9 +110,11 @@ InputSettings2::InputSettings2(wxWindow* parent)
 		adapter->Enable(!event.IsChecked());
 		sync->Enable(event.IsChecked());
 	});
-	sync->Bind(wxEVT_BUTTON, [](wxCommandEvent&) {
+	sync->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
 		auto provider = std::static_pointer_cast<WiimoteControllerProvider>(InputManager::instance().get_api_provider(InputAPI::Wiimote));
 		provider->request_discovery();
+		m_sync_until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+		update_usb_status();
 	});
 	adapter->Bind(wxEVT_BUTTON, [this, adapterId](wxCommandEvent&) {
 		wxTextEntryDialog dialog(this, _("Enter the dedicated adapter's USB VID:PID from Device Manager (XXXX:YYYY).\nInstall WinUSB for that adapter using Zadig, not for your regular Bluetooth adapter."), _("Dedicated Bluetooth adapter"), wxString::FromUTF8(GetConfig().wiimote_usb_adapter.GetValue()));
@@ -141,6 +143,9 @@ InputSettings2::InputSettings2(wxWindow* parent)
 	adapterRow->Add(adapterId, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 10);
 	adapterRow->Add(sync, 0, wxRIGHT, 5);
 	sizer->Add(adapterRow, 0, wxLEFT | wxRIGHT | wxBOTTOM, 5);
+	m_usb_status = new wxStaticText(this, wxID_ANY, wxEmptyString);
+	sizer->Add(m_usb_status, 0, wxLEFT | wxRIGHT | wxBOTTOM | wxEXPAND, 5);
+	update_usb_status();
 
 	m_notebook = new wxNotebook(this, wxID_ANY);
 	for(size_t i = 0; i < InputManager::kMaxController; ++i)
@@ -589,8 +594,33 @@ void InputSettings2::on_notebook_page_changed(wxBookCtrlEvent& event)
 	event.Skip();
 }
 
+void InputSettings2::update_usb_status()
+{
+#if defined(_WIN32) && defined(HAS_LIBUSB) && HAS_WIIMOTE
+	if (!m_usb_status) return;
+	wxString text;
+	if (GetConfig().wiimote_usb_bluetooth.GetValue() && InputManager::instance().is_api_available(InputAPI::Wiimote))
+	{
+		auto provider = std::static_pointer_cast<WiimoteControllerProvider>(InputManager::instance().get_api_provider(InputAPI::Wiimote));
+		text = wxString::FromUTF8(provider->usb_bluetooth_status());
+		const auto now = std::chrono::steady_clock::now();
+		if (now < m_sync_until)
+		{
+			const auto left = std::chrono::duration_cast<std::chrono::seconds>(m_sync_until - now).count() + 1;
+			text = wxString::Format(_("Searching for Wii Remotes (%lld s left): press the red SYNC button on the remote now.
+%s"), static_cast<long long>(left), text);
+		}
+	}
+	if (text == m_usb_status_text) return;
+	m_usb_status_text = text;
+	m_usb_status->SetLabel(text);
+	Layout();
+#endif
+}
+
 void InputSettings2::on_timer(wxTimerEvent&)
 {
+	update_usb_status();
 	if (m_controller_dirty->exchange(false, std::memory_order_acq_rel)) on_controller_changed();
 	if (get_current_page_data().m_controller != InputManager::instance().get_controller(m_notebook->GetSelection())) on_controller_changed();
 	auto& page_data = get_current_page_data();
