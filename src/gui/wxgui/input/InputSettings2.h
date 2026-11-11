@@ -13,6 +13,7 @@
 
 struct ControllerPage;
 class ControllerBase;
+class wxStaticText;
 
 class InputSettings2 : public wxDialog
 {
