@@ -48,6 +48,7 @@ struct Remote {
     Channel control, interrupt;
     bool connecting = false;
     bool authenticated = false, authenticating = false, bonded = false, incoming = false;
+    bool keyRejected = false; // the remote refused our stored link key on its last reconnect
     std::uint64_t progress{};
     Bytes assembly;
     std::deque<Bytes> reports;
@@ -283,16 +284,17 @@ public:
             if (auto* r = ByHandle(Read16(p, 1))) {
                 r->authenticating=false;
                 if (p[0]) {
-                    // The remote rejected the stored link key: a stale bond (some third-party remotes re-pair
-                    // every session). Forget it and open a pairing window so red SYNC can pair it again.
+                    // The remote rejected the stored link key. Keep the key for now (some third-party remotes
+                    // fail transiently and reconnect fine on the next A press); it is dropped only when the
+                    // remote shows up again in a SYNC search, so that pairing starts from scratch.
                     if (r->bonded || m_keys.contains(r->address)) {
-                        m_keys.erase(r->address); r->bonded = false; ++m_bondRevision; RequestSync();
-                        m_status = "Wii Remote rejected its saved pairing key; press red SYNC on it to pair again";
+                        r->keyRejected = true;
+                        m_status = "Wii Remote rejected its saved pairing key; if A keeps failing, use Pair Wii Remote (SYNC) and press red SYNC on it";
                     }
                     Disconnect(*r);
                 }
                 else {
-                    r->authenticated=true;r->bonded=true;++m_bondRevision;
+                    r->authenticated=true;r->bonded=true;r->keyRejected=false;++m_bondRevision;
                     if (!r->incoming && !r->control.peer) OpenChannel(*r, r->control, 0x11);
                     else if (!r->incoming && r->control.Ready() && !r->interrupt.peer) OpenChannel(*r, r->interrupt, 0x13);
                 }
@@ -451,6 +453,10 @@ private:
         ++m_nameAccepted;
         r->name = name; r->progress = m_now;
         r->incoming=false;
+        if (r->keyRejected) {
+            // Discovered again after refusing our key: forget the stale bond so this connection pairs anew.
+            m_keys.erase(r->address); r->bonded = false; r->keyRejected = false; ++m_bondRevision;
+        }
         Bytes data(r->address.begin(), r->address.end()); Put16(data, 0xcc18);
         data.insert(data.end(), {1, 0, 0, 0, 1}); Command(0x0405, data);
     }

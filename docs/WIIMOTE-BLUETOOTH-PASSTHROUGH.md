@@ -33,7 +33,9 @@ de Windows (hidapi), pero el passthrough evita los problemas del stack Bluetooth
    Si un mando no aparece (típico de clones no oficiales, que responden mal a las búsquedas
    cortas), pulsar el botón "Pair Wii Remote (SYNC)" de Input settings y, mientras dura la
    búsqueda de 30 s, SYNC en el mando. Si un mando emparejado rechaza su clave guardada al
-   pulsar A, Cemu la olvida y abre esa ventana de búsqueda él solo: basta con pulsar SYNC.
+   pulsar A, Cemu la conserva (los clones fallan a veces de forma pasajera y el siguiente A
+   entra); solo la olvida cuando ese mando vuelve a aparecer en una búsqueda SYNC, y entonces
+   se empareja desde cero.
 6. Si un juego pide "pulsa HOME para añadir un Wii Remote" (Mario Party 10, por ejemplo), pulsar HOME
    en el propio Wii Remote: Cemu no emula el menú HOME, así que esa pulsación se traduce en un
    evento de desconexión y reconexión del mando, que es lo que el juego espera para añadirlo.
