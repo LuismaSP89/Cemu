@@ -49,6 +49,7 @@ struct Remote {
     bool connecting = false;
     bool authenticated = false, authenticating = false, bonded = false, incoming = false;
     bool keyRejected = false; // the remote refused our stored link key on its last reconnect
+    bool altPin = false;      // pair with the remote address as PIN (1+2 style) instead of ours (SYNC)
     std::uint64_t progress{};
     Bytes assembly;
     std::deque<Bytes> reports;
@@ -220,7 +221,12 @@ public:
             m_pending = 0;
             if (p[0]) {
                 if (op == 0x0401) { m_inquiry = false; m_nextInquiry = m_now + 3000; }
-                else if (op == 0x0405 || op == 0x0419) { for (auto& r : m_remotes) if (r.handle == 0xffff) r.connecting = false; }
+                else if (op == 0x0405 || op == 0x0419 || op == 0x0409 || op == 0x040a || op == 0x0406 || op == 0x0411 ||
+                         op == 0x040b || op == 0x040c || op == 0x040d) {
+                    // a link command can fail when the remote already gave up (e.g. it paged us during
+                    // initialisation); that is not an adapter problem
+                    for (auto& r : m_remotes) if (r.handle == 0xffff) { r.connecting = false; r.incoming = false; }
+                }
                 else Fail("Bluetooth controller rejected connection setup");
             }
             return;
@@ -231,9 +237,20 @@ public:
         if (event == 0x03) { Connected(p); return; }
         if (event == 0x04) {
             if (p.size() < 10) { ++m_malformed; return; }
+            if (!m_ready) return; // still initialising: let the controller time the request out
             const auto a = ReadAddress(p, 0); auto* r = ByAddress(a);
+            const unsigned cod = unsigned(p[6]) | (unsigned(p[7]) << 8) | (unsigned(p[8]) << 16);
+            // Some third-party remotes page the host themselves (after SYNC, 1+2 or A) instead of waiting
+            // to be found by an inquiry. Take in an unknown caller with a peripheral (Wii Remote) class;
+            // its name is verified once the link is up and the pairing happens on that link.
+            if (!m_closing && !r && p[9] == 1 && (cod & 0x1f00) == 0x0500 && !m_rejectedNames.contains(a)) {
+                auto reusable = std::find_if(m_remotes.begin(), m_remotes.end(), [](const auto& c) { return c.handle == 0xffff && !c.connecting && !c.bonded; });
+                if (reusable != m_remotes.end()) { m_keys.erase(reusable->address); *reusable = Remote{}; r = &*reusable; }
+                else if (m_remotes.size() < MaxRemotes) { m_remotes.emplace_back(); r = &m_remotes.back(); }
+                if (r) { r->address = a; r->classOfDevice = cod; }
+            }
             Bytes data(a.begin(), a.end());
-            if (!m_closing && r && IsWiiName(r->name) && p[9] == 1) {
+            if (!m_closing && r && (IsWiiName(r->name) || r->name.empty()) && p[9] == 1) {
                 r->incoming=true;r->connecting=true;r->progress=m_now;CancelInquiry();m_nextInquiry=std::max(m_nextInquiry,m_now+5000);
                 data.push_back(0);Command(0x0409,data);
             }
@@ -265,7 +282,9 @@ public:
             if (p.size() != 6 || !ByAddress(ReadAddress(p, 0))) { ++m_malformed; return; }
             const auto a = ReadAddress(p, 0); Bytes data(a.begin(), a.end());
             if (event == 0x16) {
-                data.push_back(6); data.insert(data.end(), m_local.begin(), m_local.end()); data.resize(23, 0);
+                const auto* r = ByAddress(a);
+                const auto& pin = r && r->altPin ? a : m_local;
+                data.push_back(6); data.insert(data.end(), pin.begin(), pin.end()); data.resize(23, 0);
                 Command(0x040d, data);
             } else if (const auto it = m_keys.find(a); it != m_keys.end()) {
                 data.insert(data.end(), it->second.begin(), it->second.end()); Command(0x040b, data);
@@ -291,6 +310,7 @@ public:
                         r->keyRejected = true;
                         m_status = "Wii Remote rejected its saved pairing key; if A keeps failing, use Pair Wii Remote (SYNC) and press red SYNC on it";
                     }
+                    else r->altPin = !r->altPin; // fresh pairing failed: try the other PIN convention next time
                     Disconnect(*r);
                 }
                 else {
@@ -429,13 +449,20 @@ private:
     void Name(std::span<const std::uint8_t> p) {
         if (p.size() < 8) { ++m_malformed; return; }
         auto* r = ByAddress(ReadAddress(p, 1)); if (!r) return;
+        const bool onLink = r->handle != 0xffff && r->name.empty(); // unknown caller already connected
         // A reconnect may win while discovery is still resolving its name.
-        if(r->incoming || r->handle!=0xffff)return;
+        if(!onLink && (r->incoming || r->handle!=0xffff))return;
         const auto end = std::find(p.begin() + 7, p.end(), 0);
         const std::string reported(p.begin() + 7, end);
         const std::string name = p[0] ? std::string{} : CanonicalWiiName(reported);
         m_lastNamedClass=r->classOfDevice;
         m_lastNameModel=p[0]?0:name=="Nintendo RVL-CNT-01"?1:name=="Nintendo RVL-CNT-01-TR"?2:reported.find("RVL-CNT-01-UC")!=std::string::npos?3:4;
+        if (onLink) {
+            if (p[0] || name.empty()) { ++m_nameRejected; m_rejectedNames[r->address] = m_now + 60000; Disconnect(*r); return; }
+            ++m_nameAccepted; r->name = name; r->progress = m_now;
+            Authenticate(*r);
+            return;
+        }
         if (p[0] || name.empty()) {
             r->connecting = false;++m_nameRejected;
             // Keep the rejected names (device names only, never addresses) so the opt-in trace shows
@@ -462,13 +489,18 @@ private:
     }
     void Connected(std::span<const std::uint8_t> p) {
         if (p.size() != 11) { ++m_malformed; return; }
-        auto* r = ByAddress(ReadAddress(p, 3)); if (!r || !IsWiiName(r->name)) return;
+        auto* r = ByAddress(ReadAddress(p, 3)); if (!r || !(IsWiiName(r->name) || (r->incoming && r->name.empty()))) return;
         r->connecting = false; if (p[0] || p[9] != 1) {m_nextInquiry=m_now+5000;return;}
         const auto index = size_t(r - m_remotes.data());
         r->handle = Read16(p, 1) & 0xfff; r->progress = m_now;
         r->control.local = static_cast<std::uint16_t>(0x40 + index * 2);
         r->interrupt.local = static_cast<std::uint16_t>(r->control.local + 1);
         if(m_closing) {Bytes b;Put16(b,r->handle);b.push_back(0x13);Command(0x0406,b);return;}
+        if (r->name.empty()) {
+            // unknown caller: verify the name over the new link before pairing
+            Bytes data(r->address.begin(), r->address.end()); data.insert(data.end(), {1, 0, 0, 0}); Command(0x0419, data);
+            return;
+        }
         Authenticate(*r);
     }
     bool Acl(Remote& r, std::uint16_t cid, std::span<const std::uint8_t> data,std::uint64_t dueUs=0) {
