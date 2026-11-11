@@ -83,11 +83,14 @@ public:
         const bool allowInquiry = connected < MaxRemotes && (now < m_syncUntil || now >= m_audioUntil);
         if (!allowInquiry) CancelInquiry();
         if (m_ready && allowInquiry && !connecting && !m_inquiry && now >= m_nextInquiry && connected < MaxRemotes && !m_pending && m_commands.empty()) {
-            Command(0x0401, {0x33, 0x8b, 0x9e, 1, 0});
+            // Background inquiries stay short so connected remotes keep their bandwidth. During an explicit
+            // pairing window they last 5.12 s: third-party remotes often miss a 1.28 s scan.
+            Command(0x0401, {0x33, 0x8b, 0x9e, static_cast<std::uint8_t>(now < m_syncUntil ? 4 : 1), 0});
             m_inquiry = true; m_nextInquiry = now + 5000;
         }
     }
-    void RequestSync() { m_nextInquiry = m_now; m_syncUntil = m_now + 20000; }
+    void RequestSync() { m_nextInquiry = m_now; m_syncUntil = m_now + 30000; }
+    bool SyncActive() const { return m_now < m_syncUntil; }
     bool Ready() const { return m_ready && !m_closing && m_error.empty(); }
     void BeginShutdown() {
         if (m_closing) return;
@@ -263,14 +266,23 @@ public:
         if (event == 0x18) {
             if (p.size() != 23) { ++m_malformed; return; }
             const auto a = ReadAddress(p, 0);
-            if (ByAddress(a) && p[22]==0) { std::array<std::uint8_t, 16> key{}; std::copy_n(p.begin() + 6, 16, key.begin()); m_keys[a] = key; ++m_bondRevision; }
+            // combination keys only (0 legacy, 4/5 P-192, 6 changed); unit/debug keys are never stored
+            if (ByAddress(a) && (p[22]==0 || p[22]==4 || p[22]==5 || p[22]==6)) { std::array<std::uint8_t, 16> key{}; std::copy_n(p.begin() + 6, 16, key.begin()); m_keys[a] = key; ++m_bondRevision; }
             return;
         }
         if (event == 0x06) {
             if (p.size() != 3) { ++m_malformed; return; }
             if (auto* r = ByHandle(Read16(p, 1))) {
                 r->authenticating=false;
-                if (p[0]) Disconnect(*r);
+                if (p[0]) {
+                    // The remote rejected the stored link key: a stale bond (some third-party remotes re-pair
+                    // every session). Forget it and open a pairing window so red SYNC can pair it again.
+                    if (r->bonded || m_keys.contains(r->address)) {
+                        m_keys.erase(r->address); r->bonded = false; ++m_bondRevision; RequestSync();
+                        m_status = "Wii Remote rejected its saved pairing key; press red SYNC on it to pair again";
+                    }
+                    Disconnect(*r);
+                }
                 else {
                     r->authenticated=true;r->bonded=true;++m_bondRevision;
                     if (!r->incoming && !r->control.peer) OpenChannel(*r, r->control, 0x11);

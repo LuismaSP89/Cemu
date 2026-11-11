@@ -99,12 +99,20 @@ InputSettings2::InputSettings2(wxWindow* parent)
 	usb->SetToolTip(_("Requires a dedicated Classic Bluetooth USB adapter with WinUSB. Use SYNC to pair and A to reconnect."));
 	auto* adapter = new wxButton(this, wxID_ANY, _("Adapter USB ID...") );
 	auto* adapterId = new wxStaticText(this, wxID_ANY, wxString::FromUTF8(GetConfig().wiimote_usb_adapter.GetValue()));
+	auto* sync = new wxButton(this, wxID_ANY, _("Pair Wii Remote (SYNC)"));
+	sync->SetToolTip(_("Searches for Wii Remotes for 30 seconds with long scans. Press the red SYNC button on the remote while the search runs. Use this for remotes that A does not reconnect."));
 	adapter->Enable(!usb->GetValue());
+	sync->Enable(usb->GetValue());
 #if defined(_WIN32) && defined(HAS_LIBUSB) && HAS_WIIMOTE
-	usb->Bind(wxEVT_CHECKBOX, [adapter](wxCommandEvent& event) {
+	usb->Bind(wxEVT_CHECKBOX, [adapter, sync](wxCommandEvent& event) {
 		auto provider = std::static_pointer_cast<WiimoteControllerProvider>(InputManager::instance().get_api_provider(InputAPI::Wiimote));
 		provider->set_usb_bluetooth(event.IsChecked());
 		adapter->Enable(!event.IsChecked());
+		sync->Enable(event.IsChecked());
+	});
+	sync->Bind(wxEVT_BUTTON, [](wxCommandEvent&) {
+		auto provider = std::static_pointer_cast<WiimoteControllerProvider>(InputManager::instance().get_api_provider(InputAPI::Wiimote));
+		provider->request_discovery();
 	});
 	adapter->Bind(wxEVT_BUTTON, [this, adapterId](wxCommandEvent&) {
 		wxTextEntryDialog dialog(this, _("Enter the dedicated adapter's USB VID:PID from Device Manager (XXXX:YYYY).\nInstall WinUSB for that adapter using Zadig, not for your regular Bluetooth adapter."), _("Dedicated Bluetooth adapter"), wxString::FromUTF8(GetConfig().wiimote_usb_adapter.GetValue()));
@@ -125,11 +133,13 @@ InputSettings2::InputSettings2(wxWindow* parent)
 #else
 	usb->Disable();
 	adapter->Disable();
+	sync->Disable();
 #endif
 	sizer->Add(usb, 0, wxLEFT | wxRIGHT | wxBOTTOM, 5);
 	auto* adapterRow = new wxBoxSizer(wxHORIZONTAL);
 	adapterRow->Add(adapter, 0, wxRIGHT, 5);
-	adapterRow->Add(adapterId, 0, wxALIGN_CENTER_VERTICAL);
+	adapterRow->Add(adapterId, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 10);
+	adapterRow->Add(sync, 0, wxRIGHT, 5);
 	sizer->Add(adapterRow, 0, wxLEFT | wxRIGHT | wxBOTTOM, 5);
 
 	m_notebook = new wxNotebook(this, wxID_ANY);
